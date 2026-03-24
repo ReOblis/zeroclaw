@@ -126,6 +126,33 @@ use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant, SystemTime};
 use tokio_util::sync::CancellationToken;
 
+/// Process-global registry of live (connected) channel instances.
+/// Populated by `start_channels()` so that subsystems like cron can
+/// reuse the daemon's connected channels instead of creating new ones.
+static LIVE_CHANNELS: OnceLock<Mutex<HashMap<String, Arc<dyn Channel>>>> = OnceLock::new();
+
+pub fn live_channels_registry() -> &'static Mutex<HashMap<String, Arc<dyn Channel>>> {
+    LIVE_CHANNELS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+pub fn register_live_channels(channels: &HashMap<String, Arc<dyn Channel>>) {
+    let mut registry = live_channels_registry().lock().unwrap();
+    for (name, ch) in channels {
+        registry.insert(name.clone(), Arc::clone(ch));
+    }
+}
+
+pub fn get_live_channel(name: &str) -> Option<Arc<dyn Channel>> {
+    let registry = live_channels_registry().lock().unwrap();
+    registry.get(name).cloned()
+}
+
+pub fn clear_live_channels() {
+    if let Some(registry) = LIVE_CHANNELS.get() {
+        registry.lock().unwrap().clear();
+    }
+}
+
 /// Observer wrapper that forwards tool-call events to a channel sender
 /// for real-time threaded notifications.
 struct ChannelNotifyObserver {
@@ -4558,6 +4585,9 @@ pub async fn doctor_channels(config: Config) -> Result<()> {
 /// Start all configured channels and route messages to the agent
 #[allow(clippy::too_many_lines)]
 pub async fn start_channels(config: Config) -> Result<()> {
+    // Clear any previously registered live channels (e.g. on restart).
+    clear_live_channels();
+
     let provider_name = resolved_default_provider(&config);
     let provider_runtime_options = providers::ProviderRuntimeOptions {
         auth_profile_override: None,
@@ -4939,6 +4969,9 @@ pub async fn start_channels(config: Config) -> Result<()> {
             map.insert(name.clone(), Arc::clone(ch));
         }
     }
+
+    // Register live channels for subsystems like cron delivery.
+    register_live_channels(channels_by_name.as_ref());
 
     let max_in_flight_messages = compute_max_in_flight_messages(channels.len());
 

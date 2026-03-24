@@ -548,29 +548,36 @@ pub(crate) async fn deliver_announcement(
         "whatsapp" | "whatsapp-web" | "whatsapp_web" => {
             #[cfg(feature = "whatsapp-web")]
             {
-                let wa = config
-                    .channels_config
-                    .whatsapp
-                    .as_ref()
-                    .ok_or_else(|| anyhow::anyhow!("whatsapp channel not configured"))?;
-                if !wa.is_web_config() {
-                    anyhow::bail!(
-                        "whatsapp cron delivery requires Web mode (session_path must be set)"
+                // Try to reuse the daemon's live (connected) channel first.
+                if let Some(live_ch) = crate::channels::get_live_channel("whatsapp") {
+                    live_ch
+                        .send(&SendMessage::new(safe_output.as_str(), target))
+                        .await?;
+                } else {
+                    let wa = config
+                        .channels_config
+                        .whatsapp
+                        .as_ref()
+                        .ok_or_else(|| anyhow::anyhow!("whatsapp channel not configured"))?;
+                    if !wa.is_web_config() {
+                        anyhow::bail!(
+                            "whatsapp cron delivery requires Web mode (session_path must be set)"
+                        );
+                    }
+                    let channel = WhatsAppWebChannel::new(
+                        wa.session_path.clone().unwrap_or_default(),
+                        wa.pair_phone.clone(),
+                        wa.pair_code.clone(),
+                        wa.allowed_numbers.clone(),
+                        wa.mode.clone(),
+                        wa.dm_policy.clone(),
+                        wa.group_policy.clone(),
+                        wa.self_chat_mode,
                     );
+                    channel
+                        .send(&SendMessage::new(safe_output.as_str(), target))
+                        .await?;
                 }
-                let channel = WhatsAppWebChannel::new(
-                    wa.session_path.clone().unwrap_or_default(),
-                    wa.pair_phone.clone(),
-                    wa.pair_code.clone(),
-                    wa.allowed_numbers.clone(),
-                    wa.mode.clone(),
-                    wa.dm_policy.clone(),
-                    wa.group_policy.clone(),
-                    wa.self_chat_mode,
-                );
-                channel
-                    .send(&SendMessage::new(safe_output.as_str(), target))
-                    .await?;
             }
             #[cfg(not(feature = "whatsapp-web"))]
             {
