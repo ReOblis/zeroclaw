@@ -33,14 +33,14 @@
     dead_code
 )]
 
-use anyhow::{bail, Context, Result};
+use anyhow::{Context, Result, bail};
 use clap::{CommandFactory, Parser, Subcommand, ValueEnum};
 use dialoguer::Password;
 use serde::{Deserialize, Serialize};
 use std::io::{IsTerminal, Write};
 use std::path::PathBuf;
 use tracing::{info, warn};
-use tracing_subscriber::{fmt, EnvFilter};
+use tracing_subscriber::{EnvFilter, fmt};
 
 fn parse_temperature(s: &str) -> std::result::Result<f64, String> {
     let t: f64 = s.parse().map_err(|e| format!("{e}"))?;
@@ -96,6 +96,7 @@ mod integrations;
 mod memory;
 mod migration;
 mod multimodal;
+mod nodes;
 mod observability;
 mod onboard;
 mod peripherals;
@@ -158,6 +159,11 @@ struct Cli {
     #[arg(long, global = true)]
     config_dir: Option<String>,
 
+    /// Print every message sent to the LLM provider (system prompt, history, user turn).
+    /// Shows the full payload on the first turn and the growing history on subsequent turns.
+    #[arg(long, global = true)]
+    log_llm: bool,
+
     #[command(subcommand)]
     command: Commands,
 }
@@ -177,6 +183,10 @@ enum Commands {
         /// Reconfigure channels only (fast repair flow)
         #[arg(long)]
         channels_only: bool,
+
+        /// Force interactive wizard mode (override TTY auto-detection)
+        #[arg(long)]
+        interactive: bool,
 
         /// API key for provider configuration
         #[arg(long)]
@@ -647,6 +657,15 @@ enum PluginCommands {
 enum ConfigCommands {
     /// Dump the full configuration JSON Schema to stdout
     Schema,
+    /// Hot-reload config from disk into the running gateway
+    Reload {
+        /// Gateway port (defaults to config gateway.port)
+        #[arg(short, long)]
+        port: Option<u16>,
+        /// Gateway host (defaults to config gateway.host)
+        #[arg(long)]
+        host: Option<String>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -867,7 +886,8 @@ async fn main() -> Result<()> {
         if config_dir.trim().is_empty() {
             bail!("--config-dir cannot be empty");
         }
-        std::env::set_var("ZEROCLAW_CONFIG_DIR", config_dir);
+        // SAFETY: called early in main before any threads are spawned.
+        unsafe { std::env::set_var("ZEROCLAW_CONFIG_DIR", config_dir) };
     }
 
     // Completions must remain stdout-only and should not load config or initialize logging.
@@ -879,11 +899,17 @@ async fn main() -> Result<()> {
     }
 
     // Initialize logging - respects RUST_LOG env var, defaults to INFO
-    let subscriber = fmt::Subscriber::builder()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
+    let base_filter = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"));
+    let filter = if cli.log_llm {
+        base_filter.add_directive(
+            "zeroclaw::providers::reliable=trace"
+                .parse()
+                .expect("valid directive"),
         )
-        .finish();
+    } else {
+        base_filter
+    };
+    let subscriber = fmt::Subscriber::builder().with_env_filter(filter).finish();
 
     tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
 
@@ -898,6 +924,7 @@ async fn main() -> Result<()> {
         force,
         reinit,
         channels_only,
+        interactive,
         api_key,
         provider,
         model,
@@ -908,6 +935,7 @@ async fn main() -> Result<()> {
         let force = *force;
         let reinit = *reinit;
         let channels_only = *channels_only;
+        let interactive = *interactive;
         let api_key = api_key.clone();
         let provider = provider.clone();
         let model = model.clone();
@@ -972,6 +1000,8 @@ async fn main() -> Result<()> {
 
         // Auto-detect: run the interactive wizard when in a TTY with no
         // provider flags, quick setup otherwise (scriptable path).
+        // --interactive flag forces interactive mode regardless of TTY detection.
+        // --interactive flag forces interactive mode regardless of TTY detection.
         let has_provider_flags =
             api_key.is_some() || provider.is_some() || model.is_some() || memory.is_some();
         let is_tty = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
@@ -988,7 +1018,7 @@ async fn main() -> Result<()> {
                 force,
             ))
             .await
-        } else if is_tty || env_interactive {
+        } else if interactive || is_tty || env_interactive {
             Box::pin(onboard::run_wizard(force)).await
         } else {
             Box::pin(onboard::run_quick_setup(
@@ -1085,7 +1115,8 @@ async fn main() -> Result<()> {
                     info!("🔄 Restarting ZeroClaw Gateway on {addr}");
 
                     // Try to gracefully shutdown existing gateway via admin endpoint
-                    match shutdown_gateway(&host, port).await {
+                    match shutdown_gateway(&host, port, config.gateway.path_prefix.as_deref()).await
+                    {
                         Ok(()) => {
                             info!("   ✓ Existing gateway on {addr} shut down gracefully");
                             // Poll until the port is free (connection refused) or timeout
@@ -1118,10 +1149,15 @@ async fn main() -> Result<()> {
                 Some(zeroclaw::GatewayCommands::GetPaircode { new }) => {
                     let port = config.gateway.port;
                     let host = &config.gateway.host;
+                    let path_prefix = config
+                        .gateway
+                        .path_prefix
+                        .as_deref()
+                        .filter(|p| !p.is_empty());
 
                     // Fetch live pairing code from running gateway
                     // If --new is specified, generate a fresh pairing code
-                    match fetch_paircode(host, port, new).await {
+                    match fetch_paircode(host, port, path_prefix, new).await {
                         Ok(Some(code)) => {
                             println!("🔐 Gateway pairing is enabled.");
                             println!();
@@ -1134,8 +1170,12 @@ async fn main() -> Result<()> {
                         }
                         Ok(None) => {
                             if config.gateway.require_pairing {
-                                println!("🔐 Gateway pairing is enabled, but no active pairing code available.");
-                                println!("   The gateway may already be paired, or the code has been used.");
+                                println!(
+                                    "🔐 Gateway pairing is enabled, but no active pairing code available."
+                                );
+                                println!(
+                                    "   The gateway may already be paired, or the code has been used."
+                                );
                                 println!("   Restart the gateway to generate a new pairing code.");
                             } else {
                                 println!("⚠️  Gateway pairing is disabled in config.");
@@ -1632,6 +1672,11 @@ async fn main() -> Result<()> {
                 );
                 Ok(())
             }
+            ConfigCommands::Reload { port, host } => {
+                let port = port.unwrap_or(config.gateway.port);
+                let host = host.as_deref().unwrap_or(&config.gateway.host);
+                reload_config(host, port).await
+            }
         },
 
         Commands::Secret { secret_command } => match secret_command {
@@ -1936,8 +1981,9 @@ fn log_gateway_start(host: &str, port: u16) {
 }
 
 /// Gracefully shutdown a running gateway via the admin endpoint.
-async fn shutdown_gateway(host: &str, port: u16) -> Result<()> {
-    let url = format!("http://{host}:{port}/admin/shutdown");
+async fn shutdown_gateway(host: &str, port: u16, path_prefix: Option<&str>) -> Result<()> {
+    let prefix = path_prefix.unwrap_or("");
+    let url = format!("http://{host}:{port}{prefix}/admin/shutdown");
     let client = reqwest::Client::new();
 
     match client
@@ -1955,14 +2001,101 @@ async fn shutdown_gateway(host: &str, port: u16) -> Result<()> {
     }
 }
 
+/// Hot-reload config on a running gateway via the admin endpoint.
+async fn reload_config(host: &str, port: u16) -> Result<()> {
+    let is_loopback = host == "localhost"
+        || host
+            .strip_prefix('[')
+            .and_then(|s| s.strip_suffix(']'))
+            .or(Some(host))
+            .and_then(|s| s.parse::<std::net::IpAddr>().ok())
+            .is_some_and(|ip| ip.is_loopback());
+    if !is_loopback {
+        anyhow::bail!(
+            "Refusing to send admin request to non-loopback host '{host}'. \
+             Only loopback addresses (127.0.0.0/8, ::1) and 'localhost' are allowed."
+        );
+    }
+
+    let authority = if host.contains(':') && !host.starts_with('[') {
+        format!("[{host}]:{port}")
+    } else {
+        format!("{host}:{port}")
+    };
+    let url = format!("http://{authority}/admin/reload-config");
+    let client = reqwest::Client::new();
+
+    match client
+        .post(url)
+        .timeout(std::time::Duration::from_secs(10))
+        .send()
+        .await
+    {
+        Ok(response) if response.status().is_success() => {
+            let body: serde_json::Value = response.json().await?;
+            let msg = body
+                .get("message")
+                .and_then(|v| v.as_str())
+                .unwrap_or("Config reloaded");
+            let restart = body
+                .get("restart_required")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false);
+            if restart {
+                let warnings = body
+                    .get("restart_warnings")
+                    .and_then(|v| v.as_array())
+                    .cloned()
+                    .unwrap_or_default();
+                println!("✅ Config reloaded from disk.");
+                println!();
+                println!("⚠️  Some changes need a daemon restart:");
+                for w in &warnings {
+                    if let Some(s) = w.as_str() {
+                        println!("  - {s}");
+                    }
+                }
+                println!();
+                println!("Run: sudo systemctl restart zeroclaw");
+            } else {
+                println!("✅ {msg}");
+            }
+            Ok(())
+        }
+        Ok(response) => {
+            let status = response.status();
+            let err_msg = match response.json::<serde_json::Value>().await {
+                Ok(body) => body
+                    .get("error")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("unknown error")
+                    .to_string(),
+                Err(_) => "non-JSON error response".to_string(),
+            };
+            Err(anyhow::anyhow!(
+                "Gateway responded with {status}: {err_msg}"
+            ))
+        }
+        Err(e) => Err(anyhow::anyhow!(
+            "Failed to connect to gateway at {authority}: {e}"
+        )),
+    }
+}
+
 /// Fetch the current pairing code from a running gateway.
 /// If `new` is true, generates a fresh pairing code via POST request.
-async fn fetch_paircode(host: &str, port: u16, new: bool) -> Result<Option<String>> {
+async fn fetch_paircode(
+    host: &str,
+    port: u16,
+    path_prefix: Option<&str>,
+    new: bool,
+) -> Result<Option<String>> {
     let client = reqwest::Client::new();
+    let pfx = path_prefix.unwrap_or("");
 
     let response = if new {
         // Generate a new pairing code via POST
-        let url = format!("http://{host}:{port}/admin/paircode/new");
+        let url = format!("http://{host}:{port}{pfx}/admin/paircode/new");
         client
             .post(&url)
             .timeout(std::time::Duration::from_secs(5))
@@ -1970,7 +2103,7 @@ async fn fetch_paircode(host: &str, port: u16, new: bool) -> Result<Option<Strin
             .await
     } else {
         // Get existing pairing code via GET
-        let url = format!("http://{host}:{port}/admin/paircode");
+        let url = format!("http://{host}:{port}{pfx}/admin/paircode");
         client
             .get(&url)
             .timeout(std::time::Duration::from_secs(5))
@@ -2779,9 +2912,15 @@ mod tests {
     }
 
     #[test]
-    fn onboard_cli_rejects_removed_interactive_flag() {
-        // --interactive was removed; onboard auto-detects TTY instead.
-        assert!(Cli::try_parse_from(["zeroclaw", "onboard", "--interactive"]).is_err());
+    fn onboard_cli_accepts_interactive_flag() {
+        // --interactive forces interactive wizard mode regardless of TTY detection.
+        let cli = Cli::try_parse_from(["zeroclaw", "onboard", "--interactive"])
+            .expect("onboard --interactive should parse");
+
+        match cli.command {
+            Commands::Onboard { interactive, .. } => assert!(interactive),
+            other => panic!("expected onboard command, got {other:?}"),
+        }
     }
 
     #[test]
