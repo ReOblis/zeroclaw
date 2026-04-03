@@ -13,7 +13,10 @@ fn cap(name: &str, desc: &str) -> NodeCapability {
 /// macOS desktop capabilities (mirrors Tauri desktop_capabilities).
 pub fn macos_capabilities() -> Vec<NodeCapability> {
     vec![
-        cap("desktop.applescript", "Execute a predefined AppleScript action"),
+        cap(
+            "desktop.applescript",
+            "Execute a predefined AppleScript action",
+        ),
         cap("desktop.screenshot", "Capture a screenshot"),
         cap("desktop.camera.snap", "Capture a photo from the camera"),
         cap("desktop.notify", "Send a native macOS notification"),

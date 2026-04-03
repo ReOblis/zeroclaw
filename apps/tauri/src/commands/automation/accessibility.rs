@@ -95,10 +95,7 @@ end tell"#
 
 /// Click a UI element in an application by matching its name/title.
 #[tauri::command]
-pub async fn click_ui_element(
-    app_name: String,
-    element_name: String,
-) -> Result<(), String> {
+pub async fn click_ui_element(app_name: String, element_name: String) -> Result<(), String> {
     let escaped_app = app_name.replace('\\', "\\\\").replace('"', "\\\"");
     let escaped_elem = element_name.replace('\\', "\\\\").replace('"', "\\\"");
 
@@ -128,10 +125,7 @@ end tell"#
 
 /// Type text into a focused UI element in an application.
 #[tauri::command]
-pub async fn type_into_element(
-    app_name: String,
-    text: String,
-) -> Result<(), String> {
+pub async fn type_into_element(app_name: String, text: String) -> Result<(), String> {
     let escaped_app = app_name.replace('\\', "\\\\").replace('"', "\\\"");
     let escaped_text = text.replace('\\', "\\\\").replace('"', "\\\"");
 

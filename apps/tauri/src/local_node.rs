@@ -144,27 +144,43 @@ fn desktop_capabilities() -> Vec<Capability> {
 
 /// Handle an invocation from the gateway by dispatching to the appropriate
 /// local automation command.
-async fn handle_invocation(capability: &str, args: &serde_json::Value) -> (bool, String, Option<String>) {
+async fn handle_invocation(
+    capability: &str,
+    args: &serde_json::Value,
+) -> (bool, String, Option<String>) {
     use crate::commands::automation;
 
     match capability {
         "desktop.applescript" => {
-            let action = args.get("action").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let params: automation::applescript::AppleScriptParams =
-                serde_json::from_value(args.get("params").cloned().unwrap_or_default()).unwrap_or(
-                    automation::applescript::AppleScriptParams {
-                        bundle_id: None, app_name: None, text: None, path: None,
-                        x: None, y: None, width: None, height: None,
-                        level: None, enabled: None,
-                    },
-                );
+            let action = args
+                .get("action")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let params: automation::applescript::AppleScriptParams = serde_json::from_value(
+                args.get("params").cloned().unwrap_or_default(),
+            )
+            .unwrap_or(automation::applescript::AppleScriptParams {
+                bundle_id: None,
+                app_name: None,
+                text: None,
+                path: None,
+                x: None,
+                y: None,
+                width: None,
+                height: None,
+                level: None,
+                enabled: None,
+            });
             match automation::applescript::run_applescript_action(action, params).await {
                 Ok(out) => (true, out, None),
                 Err(e) => (false, String::new(), Some(e)),
             }
         }
         "desktop.screenshot" => {
-            let region = args.get("region").and_then(|v| serde_json::from_value(v.clone()).ok());
+            let region = args
+                .get("region")
+                .and_then(|v| serde_json::from_value(v.clone()).ok());
             match automation::screen::capture_screen(region).await {
                 Ok(result) => (true, result.base64, None),
                 Err(e) => (false, String::new(), Some(e)),
@@ -175,46 +191,93 @@ async fn handle_invocation(capability: &str, args: &serde_json::Value) -> (bool,
             Err(e) => (false, String::new(), Some(e)),
         },
         "desktop.notify" => {
-            let title = args.get("title").and_then(|v| v.as_str()).unwrap_or("ZeroClaw").to_string();
-            let body = args.get("body").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let subtitle = args.get("subtitle").and_then(|v| v.as_str()).map(String::from);
-            match automation::notifications::send_desktop_notification(title, body, subtitle, None).await {
+            let title = args
+                .get("title")
+                .and_then(|v| v.as_str())
+                .unwrap_or("ZeroClaw")
+                .to_string();
+            let body = args
+                .get("body")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let subtitle = args
+                .get("subtitle")
+                .and_then(|v| v.as_str())
+                .map(String::from);
+            match automation::notifications::send_desktop_notification(title, body, subtitle, None)
+                .await
+            {
                 Ok(()) => (true, "Notification sent".into(), None),
                 Err(e) => (false, String::new(), Some(e)),
             }
         }
         "desktop.accessibility.inspect" => {
-            let app = args.get("app_name").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let role = args.get("role_filter").and_then(|v| v.as_str()).map(String::from);
+            let app = args
+                .get("app_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let role = args
+                .get("role_filter")
+                .and_then(|v| v.as_str())
+                .map(String::from);
             match automation::accessibility::inspect_ui_element(app, role).await {
-                Ok(elements) => (true, serde_json::to_string(&elements).unwrap_or_default(), None),
+                Ok(elements) => (
+                    true,
+                    serde_json::to_string(&elements).unwrap_or_default(),
+                    None,
+                ),
                 Err(e) => (false, String::new(), Some(e)),
             }
         }
         "desktop.accessibility.click" => {
-            let app = args.get("app_name").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let elem = args.get("element_name").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let app = args
+                .get("app_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let elem = args
+                .get("element_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
             match automation::accessibility::click_ui_element(app, elem).await {
                 Ok(()) => (true, "Clicked".into(), None),
                 Err(e) => (false, String::new(), Some(e)),
             }
         }
         "desktop.accessibility.type" => {
-            let app = args.get("app_name").and_then(|v| v.as_str()).unwrap_or("").to_string();
-            let text = args.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            let app = args
+                .get("app_name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let text = args
+                .get("text")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
             match automation::accessibility::type_into_element(app, text).await {
                 Ok(()) => (true, "Typed".into(), None),
                 Err(e) => (false, String::new(), Some(e)),
             }
         }
         "desktop.audio.record" => {
-            let dur = args.get("duration_secs").and_then(|v| v.as_u64()).unwrap_or(5) as u32;
+            let dur = args
+                .get("duration_secs")
+                .and_then(|v| v.as_u64())
+                .unwrap_or(5) as u32;
             match automation::microphone::record_audio(dur).await {
                 Ok(b64) => (true, b64, None),
                 Err(e) => (false, String::new(), Some(e)),
             }
         }
-        _ => (false, String::new(), Some(format!("Unknown capability: {capability}"))),
+        _ => (
+            false,
+            String::new(),
+            Some(format!("Unknown capability: {capability}")),
+        ),
     }
 }
 
@@ -273,7 +336,8 @@ async fn run_node_connection(state: &SharedState) -> anyhow::Result<()> {
 
         // Try to parse as an invoke message.
         if let Ok(invoke) = serde_json::from_str::<InvokeMessage>(&text) {
-            let (success, output, error) = handle_invocation(&invoke.capability, &invoke.args).await;
+            let (success, output, error) =
+                handle_invocation(&invoke.capability, &invoke.args).await;
             let result = ResultMessage {
                 r#type: "result",
                 call_id: invoke.call_id,

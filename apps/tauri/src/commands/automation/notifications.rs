@@ -13,7 +13,8 @@ pub async fn send_desktop_notification(
     let escaped_title = title.replace('\\', "\\\\").replace('"', "\\\"");
     let escaped_body = body.replace('\\', "\\\\").replace('"', "\\\"");
 
-    let mut script = format!(r#"display notification "{escaped_body}" with title "{escaped_title}""#);
+    let mut script =
+        format!(r#"display notification "{escaped_body}" with title "{escaped_title}""#);
 
     if let Some(ref sub) = subtitle {
         let escaped_sub = sub.replace('\\', "\\\\").replace('"', "\\\"");

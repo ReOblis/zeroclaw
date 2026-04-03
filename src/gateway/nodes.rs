@@ -370,9 +370,7 @@ impl NodePersistence {
 }
 
 /// REST handler: `GET /api/nodes` — list all nodes (online + offline).
-pub async fn handle_list_nodes(
-    State(state): State<AppState>,
-) -> impl IntoResponse {
+pub async fn handle_list_nodes(State(state): State<AppState>) -> impl IntoResponse {
     let nodes = state.node_registry.list_all_nodes();
     axum::Json(serde_json::json!({ "nodes": nodes }))
 }

@@ -38,7 +38,11 @@ async fn node_register_shows_online_and_offline_on_unregister() {
     let tmp = tempfile::TempDir::new().unwrap();
     let registry = NodeRegistry::new_with_persistence(16, tmp.path());
 
-    let info = make_info("test-phone", Some("android"), vec![cap("camera.snap", "Photo"), cap("gps", "GPS")]);
+    let info = make_info(
+        "test-phone",
+        Some("android"),
+        vec![cap("camera.snap", "Photo"), cap("gps", "GPS")],
+    );
     assert!(registry.register(info));
 
     // Should be online.
@@ -71,7 +75,11 @@ async fn node_metadata_persists_across_registry_restart() {
     // First "session": register a node.
     {
         let registry = NodeRegistry::new_with_persistence(16, tmp.path());
-        let info = make_info("persistent-node", Some("macos"), platform_fixtures::macos_capabilities());
+        let info = make_info(
+            "persistent-node",
+            Some("macos"),
+            platform_fixtures::macos_capabilities(),
+        );
         assert!(registry.register(info));
         assert_eq!(registry.list_all_nodes().len(), 1);
         assert_eq!(registry.list_all_nodes()[0].status, "online");
@@ -95,7 +103,11 @@ async fn node_metadata_persists_across_registry_restart() {
         );
 
         // Reconnect (re-register).
-        let info = make_info("persistent-node", Some("macos"), platform_fixtures::macos_capabilities());
+        let info = make_info(
+            "persistent-node",
+            Some("macos"),
+            platform_fixtures::macos_capabilities(),
+        );
         assert!(registry.register(info));
         let all = registry.list_all_nodes();
         assert_eq!(all.len(), 1);
@@ -127,7 +139,11 @@ async fn paired_device_and_node_coexist() {
 
     // Create node registry and register a node.
     let node_reg = NodeRegistry::new_with_persistence(16, tmp.path());
-    let info = make_info("phone-1", Some("android"), platform_fixtures::android_capabilities());
+    let info = make_info(
+        "phone-1",
+        Some("android"),
+        platform_fixtures::android_capabilities(),
+    );
     assert!(node_reg.register(info));
 
     // Both should be visible via their respective APIs.
@@ -165,7 +181,11 @@ async fn device_revoke_removes_device() {
 
     let revoked = device_reg.revoke("revoke-me");
     assert!(revoked, "revoke should succeed");
-    assert_eq!(device_reg.list().len(), 0, "device list should be empty after revoke");
+    assert_eq!(
+        device_reg.list().len(),
+        0,
+        "device list should be empty after revoke"
+    );
 
     // Revoking again should return false.
     assert!(!device_reg.revoke("revoke-me"));
@@ -180,10 +200,26 @@ async fn cross_platform_nodes_have_different_capabilities() {
     let tmp = tempfile::TempDir::new().unwrap();
     let registry = NodeRegistry::new_with_persistence(16, tmp.path());
 
-    registry.register(make_info("mac-1", Some("macos"), platform_fixtures::macos_capabilities()));
-    registry.register(make_info("android-1", Some("android"), platform_fixtures::android_capabilities()));
-    registry.register(make_info("win-1", Some("windows"), platform_fixtures::windows_capabilities()));
-    registry.register(make_info("linux-1", Some("linux"), platform_fixtures::linux_capabilities()));
+    registry.register(make_info(
+        "mac-1",
+        Some("macos"),
+        platform_fixtures::macos_capabilities(),
+    ));
+    registry.register(make_info(
+        "android-1",
+        Some("android"),
+        platform_fixtures::android_capabilities(),
+    ));
+    registry.register(make_info(
+        "win-1",
+        Some("windows"),
+        platform_fixtures::windows_capabilities(),
+    ));
+    registry.register(make_info(
+        "linux-1",
+        Some("linux"),
+        platform_fixtures::linux_capabilities(),
+    ));
 
     let all = registry.list_all_nodes();
     assert_eq!(all.len(), 4);
@@ -200,20 +236,40 @@ async fn cross_platform_nodes_have_different_capabilities() {
     assert_eq!(linux.device_type.as_deref(), Some("linux"));
 
     // macOS should have applescript.
-    assert!(mac.capabilities.iter().any(|c| c.name == "desktop.applescript"));
+    assert!(
+        mac.capabilities
+            .iter()
+            .any(|c| c.name == "desktop.applescript")
+    );
     // Android should have sensors.
-    assert!(android.capabilities.iter().any(|c| c.name == "sensors.accelerometer"));
+    assert!(
+        android
+            .capabilities
+            .iter()
+            .any(|c| c.name == "sensors.accelerometer")
+    );
     // Android should NOT have applescript.
-    assert!(!android.capabilities.iter().any(|c| c.name == "desktop.applescript"));
+    assert!(
+        !android
+            .capabilities
+            .iter()
+            .any(|c| c.name == "desktop.applescript")
+    );
     // Windows should have clipboard.
-    assert!(win.capabilities.iter().any(|c| c.name == "desktop.clipboard"));
+    assert!(
+        win.capabilities
+            .iter()
+            .any(|c| c.name == "desktop.clipboard")
+    );
     // Linux should have only 2 caps.
     assert_eq!(linux.capabilities.len(), 2);
 
     // Capability counts differ across platforms.
     let counts: Vec<usize> = all.iter().map(|n| n.capabilities.len()).collect();
-    assert!(counts.windows(2).all(|w| w[0] != w[1]) || counts.len() > 2,
-        "different platforms should have different capability sets");
+    assert!(
+        counts.windows(2).all(|w| w[0] != w[1]) || counts.len() > 2,
+        "different platforms should have different capability sets"
+    );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -330,7 +386,11 @@ async fn max_nodes_enforcement_rejects_overflow() {
     assert_eq!(registry.len(), 2);
 
     // But re-registering an existing node should succeed.
-    registry.register(make_info("node-0", Some("macos"), vec![cap("new", "Updated")]));
+    registry.register(make_info(
+        "node-0",
+        Some("macos"),
+        vec![cap("new", "Updated")],
+    ));
     assert_eq!(registry.len(), 2);
     let caps = registry.all_capabilities();
     assert!(caps.iter().any(|c| c.2.name == "new"));
@@ -357,7 +417,10 @@ async fn node_persistence_crud() {
     assert_eq!(nodes.len(), 1);
     assert_eq!(nodes[0].node_id, "phone-1");
     assert_eq!(nodes[0].device_type.as_deref(), Some("android"));
-    assert_eq!(nodes[0].capabilities.len(), platform_fixtures::android_capabilities().len());
+    assert_eq!(
+        nodes[0].capabilities.len(),
+        platform_fixtures::android_capabilities().len()
+    );
 
     // Update (upsert).
     persistence.persist_node(
@@ -374,5 +437,8 @@ async fn node_persistence_crud() {
     // Remove.
     assert!(persistence.remove_node("phone-1"));
     assert_eq!(persistence.list_persisted_nodes().len(), 0);
-    assert!(!persistence.remove_node("phone-1"), "second remove returns false");
+    assert!(
+        !persistence.remove_node("phone-1"),
+        "second remove returns false"
+    );
 }

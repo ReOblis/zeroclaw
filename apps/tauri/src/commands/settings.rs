@@ -44,9 +44,7 @@ fn load_settings(app: &tauri::AppHandle) -> DesktopSettings {
     match store {
         Ok(s) => {
             let get = |key: &str, default: bool| -> bool {
-                s.get(key)
-                    .and_then(|v| v.as_bool())
-                    .unwrap_or(default)
+                s.get(key).and_then(|v| v.as_bool()).unwrap_or(default)
             };
             DesktopSettings {
                 launch_at_login: get("launch_at_login", false),
@@ -64,7 +62,9 @@ fn load_settings(app: &tauri::AppHandle) -> DesktopSettings {
 /// Save a single setting to the store.
 fn save_setting(app: &tauri::AppHandle, key: &str, value: bool) -> Result<(), String> {
     use tauri_plugin_store::StoreExt;
-    let store = app.store("desktop_settings.json").map_err(|e| e.to_string())?;
+    let store = app
+        .store("desktop_settings.json")
+        .map_err(|e| e.to_string())?;
     store.set(key.to_string(), serde_json::Value::Bool(value));
     store.save().map_err(|e| e.to_string())
 }
@@ -77,11 +77,7 @@ pub fn get_desktop_settings(app: tauri::AppHandle) -> DesktopSettings {
 
 /// Set a single desktop setting by key.
 #[tauri::command]
-pub fn set_desktop_setting(
-    app: tauri::AppHandle,
-    key: String,
-    value: bool,
-) -> Result<(), String> {
+pub fn set_desktop_setting(app: tauri::AppHandle, key: String, value: bool) -> Result<(), String> {
     let valid_keys = [
         "launch_at_login",
         "show_dock_icon",
@@ -107,10 +103,7 @@ pub async fn toggle_gateway(state: State<'_, SharedState>) -> Result<bool, Strin
     if connected {
         // Send shutdown to the gateway.
         let client = reqwest::Client::new();
-        let _ = client
-            .post(format!("{url}/admin/shutdown"))
-            .send()
-            .await;
+        let _ = client.post(format!("{url}/admin/shutdown")).send().await;
         {
             let mut s = state.write().await;
             s.connected = false;
@@ -152,7 +145,10 @@ pub async fn get_gateway_info(state: State<'_, SharedState>) -> Result<GatewayIn
         let client = GatewayClient::new(&url, token.as_deref());
         let status = client.get_status().await;
         match status {
-            Ok(v) => (true, v.get("version").and_then(|v| v.as_str()).map(String::from)),
+            Ok(v) => (
+                true,
+                v.get("version").and_then(|v| v.as_str()).map(String::from),
+            ),
             Err(_) => (false, None),
         }
     } else {
@@ -164,7 +160,11 @@ pub async fn get_gateway_info(state: State<'_, SharedState>) -> Result<GatewayIn
         version,
         port,
         pid: None, // PID discovery would require reading the launchd plist or pidfile.
-        health_status: if active { "healthy".into() } else { "unreachable".into() },
+        health_status: if active {
+            "healthy".into()
+        } else {
+            "unreachable".into()
+        },
     })
 }
 

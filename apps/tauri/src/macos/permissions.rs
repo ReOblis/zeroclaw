@@ -57,9 +57,7 @@ fn check_av_permission(media_type: &str) -> &'static str {
         r#"import AVFoundation; print(AVCaptureDevice.authorizationStatus(for: .{}).rawValue)"#,
         media_type
     );
-    let output = Command::new("swift")
-        .args(["-e", &script])
-        .output();
+    let output = Command::new("swift").args(["-e", &script]).output();
 
     match output {
         Ok(out) => {
@@ -218,14 +216,28 @@ pub fn check_automation() -> &'static str {
 /// Open a specific pane in macOS System Settings (Ventura+) or System Preferences.
 pub fn open_system_settings(pane: &str) -> Result<(), String> {
     let url = match pane {
-        "accessibility" => "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility",
-        "screen_recording" => "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
+        "accessibility" => {
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility"
+        }
+        "screen_recording" => {
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
+        }
         "camera" => "x-apple.systempreferences:com.apple.preference.security?Privacy_Camera",
-        "microphone" => "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone",
-        "automation" => "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation",
-        "notifications" => "x-apple.systempreferences:com.apple.preference.security?Privacy_Notifications",
-        "speech_recognition" => "x-apple.systempreferences:com.apple.preference.security?Privacy_SpeechRecognition",
-        "full_disk_access" => "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles",
+        "microphone" => {
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"
+        }
+        "automation" => {
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_Automation"
+        }
+        "notifications" => {
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_Notifications"
+        }
+        "speech_recognition" => {
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_SpeechRecognition"
+        }
+        "full_disk_access" => {
+            "x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"
+        }
         _ => return Err(format!("Unknown settings pane: {pane}")),
     };
 

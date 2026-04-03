@@ -9,17 +9,17 @@ use tokio::process::Command;
 pub async fn record_audio(duration_secs: u32) -> Result<String, String> {
     let duration = duration_secs.clamp(1, 60); // Cap at 60 seconds.
 
-    let tmp = std::env::temp_dir().join(format!(
-        "zeroclaw_audio_{}.wav",
-        std::process::id()
-    ));
+    let tmp = std::env::temp_dir().join(format!("zeroclaw_audio_{}.wav", std::process::id()));
     let tmp_str = tmp.to_string_lossy().to_string();
 
     let status: std::process::ExitStatus = Command::new("ffmpeg")
         .args([
-            "-f", "avfoundation",
-            "-i", ":0", // default audio device
-            "-t", &duration.to_string(),
+            "-f",
+            "avfoundation",
+            "-i",
+            ":0", // default audio device
+            "-t",
+            &duration.to_string(),
             "-y",
             &tmp_str,
         ])
