@@ -21,14 +21,10 @@
 *.bash text eol=lf linguist-language=Shell
 *.ps1 text eol=crlf linguist-language=PowerShell
 
-# Vendored / non-primary language directories (excluded from GitHub language stats)
-web/** linguist-vendored
-marketplace/** linguist-vendored
-.claude/** linguist-vendored
-dev/** linguist-vendored
-firmware/** linguist-vendored
-scripts/** linguist-vendored
-tests/** linguist-vendored
+# GitHub language stats: show only Rust
+# Mark everything as vendored, then un-vendor Rust source files
+* linguist-vendored
+*.rs linguist-vendored=false
 
 # Documentation
 *.txt text eol=lf
