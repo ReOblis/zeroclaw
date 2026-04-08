@@ -4287,6 +4287,7 @@ pub async fn run(
                 }
             });
 
+            let response = loop {
                 match TOOL_LOOP_COST_TRACKING_CONTEXT
                     .scope(
                         cost_tracking_context.clone(),
