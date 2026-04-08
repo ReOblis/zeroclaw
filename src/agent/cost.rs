@@ -11,6 +11,8 @@ use std::sync::Arc;
 pub(crate) struct ToolLoopCostTrackingContext {
     pub tracker: Arc<CostTracker>,
     pub prices: Arc<std::collections::HashMap<String, ModelPricing>>,
+    pub turn_tokens: Arc<std::sync::atomic::AtomicU64>,
+    pub turn_cost_nanos: Arc<std::sync::atomic::AtomicU64>,
 }
 
 impl ToolLoopCostTrackingContext {
@@ -18,7 +20,12 @@ impl ToolLoopCostTrackingContext {
         tracker: Arc<CostTracker>,
         prices: Arc<std::collections::HashMap<String, ModelPricing>>,
     ) -> Self {
-        Self { tracker, prices }
+        Self {
+            tracker,
+            prices,
+            turn_tokens: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+            turn_cost_nanos: Arc::new(std::sync::atomic::AtomicU64::new(0)),
+        }
     }
 }
 
@@ -77,6 +84,13 @@ pub(crate) fn record_tool_loop_cost_usage(
             "Failed to record cost tracking usage: {error}"
         );
     }
+
+    // Accumulate for real-time AgentEnd reporting
+    ctx.turn_tokens.fetch_add(cost_usage.total_tokens, std::sync::atomic::Ordering::Relaxed);
+    #[allow(clippy::cast_possible_truncation)]
+    #[allow(clippy::cast_sign_loss)]
+    let cost_nanos = (cost_usage.cost_usd * 1_000_000_000.0) as u64;
+    ctx.turn_cost_nanos.fetch_add(cost_nanos, std::sync::atomic::Ordering::Relaxed);
 
     Some((cost_usage.total_tokens, cost_usage.cost_usd))
 }

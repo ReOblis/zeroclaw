@@ -103,16 +103,16 @@ pub async fn handle_events_history(
 
 /// Broadcast observer that forwards events to the SSE broadcast channel.
 pub struct BroadcastObserver {
-    inner: Box<dyn crate::observability::Observer>,
+    inner: Arc<dyn crate::observability::Observer>,
     tx: tokio::sync::broadcast::Sender<serde_json::Value>,
-    buffer: Arc<EventBuffer>,
+    buffer: Option<Arc<EventBuffer>>,
 }
 
 impl BroadcastObserver {
     pub fn new(
-        inner: Box<dyn crate::observability::Observer>,
+        inner: Arc<dyn crate::observability::Observer>,
         tx: tokio::sync::broadcast::Sender<serde_json::Value>,
-        buffer: Arc<EventBuffer>,
+        buffer: Option<Arc<EventBuffer>>,
     ) -> Self {
         Self { inner, tx, buffer }
     }
@@ -184,10 +184,25 @@ impl crate::observability::Observer for BroadcastObserver {
                 "cost_usd": cost_usd,
                 "timestamp": chrono::Utc::now().to_rfc3339(),
             }),
+            crate::observability::ObserverEvent::TurnComplete => serde_json::json!({
+                "type": "turn_complete",
+                "timestamp": chrono::Utc::now().to_rfc3339(),
+            }),
+            crate::observability::ObserverEvent::ChannelMessage {
+                channel,
+                direction,
+            } => serde_json::json!({
+                "type": "channel_message",
+                "channel": channel,
+                "direction": direction,
+                "timestamp": chrono::Utc::now().to_rfc3339(),
+            }),
             _ => return, // Skip events we don't broadcast
         };
 
-        self.buffer.push(json.clone());
+        if let Some(buf) = &self.buffer {
+            buf.push(json.clone());
+        }
         let _ = self.tx.send(json);
     }
 

@@ -796,9 +796,9 @@ pub async fn run_gateway(
     // Wrap observer with broadcast capability for SSE
     let broadcast_observer: Arc<dyn crate::observability::Observer> =
         Arc::new(sse::BroadcastObserver::new(
-            crate::observability::create_observer(&config.observability),
+            Arc::from(crate::observability::create_observer(&config.observability)),
             event_tx.clone(),
-            event_buffer.clone(),
+            Some(event_buffer.clone()),
         ));
 
     let (shutdown_tx, mut shutdown_rx) = tokio::sync::watch::channel(false);
@@ -910,6 +910,7 @@ pub async fn run_gateway(
         .route("/hooks/claude-code", post(api::handle_claude_code_hook))
         // ── Web Dashboard API routes ──
         .route("/api/status", get(api::handle_api_status))
+        .route("/api/channels", get(api::handle_api_channels))
         .route("/api/config", get(api::handle_api_config_get))
         .route("/api/tools", get(api::handle_api_tools))
         .route("/api/cron", get(api::handle_api_cron_list))
@@ -2374,9 +2375,9 @@ mod tests {
         let event_tx = tokio::sync::broadcast::channel(16).0;
         let event_buffer = Arc::new(sse::EventBuffer::new(16));
         let wrapped = sse::BroadcastObserver::new(
-            Box::new(crate::observability::PrometheusObserver::new()),
+            Arc::new(crate::observability::PrometheusObserver::new()),
             event_tx.clone(),
-            event_buffer,
+            Some(event_buffer),
         );
         crate::observability::Observer::record_event(
             &wrapped,

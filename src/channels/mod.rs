@@ -2599,6 +2599,15 @@ async fn process_channel_message(
     println!("  ⏳ Processing message...");
     let started_at = Instant::now();
 
+    // Emit inbound channel message event for live dashboard logs
+    ctx.observer.record_event(&crate::observability::traits::ObserverEvent::ChannelMessage {
+        channel: msg.channel.clone(),
+        direction: "inbound".to_string(),
+    });
+    
+    // Track message count in health components for the dashboard
+    crate::health::bump_component_message(&format!("channel:{}", msg.channel.to_ascii_lowercase()));
+
     let force_fresh_session = take_pending_new_session(ctx.as_ref(), &history_key);
     if force_fresh_session {
         // `/new` should make the next user turn completely fresh even if
@@ -2984,13 +2993,24 @@ async fn process_channel_message(
         ctx.max_tool_iterations,
         scale_cap,
     );
+    let turn_tokens = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let turn_cost_nanos = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
     let cost_tracking_context = ctx.cost_tracking.clone().map(|state| {
-        crate::agent::loop_::ToolLoopCostTrackingContext::new(state.tracker, state.prices)
+        let mut t_ctx = crate::agent::loop_::ToolLoopCostTrackingContext::new(state.tracker, state.prices);
+        t_ctx.turn_tokens = turn_tokens.clone();
+        t_ctx.turn_cost_nanos = turn_cost_nanos.clone();
+        t_ctx
     });
     let llm_call_start = Instant::now();
     #[allow(clippy::cast_possible_truncation)]
     let elapsed_before_llm_ms = started_at.elapsed().as_millis() as u64;
     tracing::info!(elapsed_before_llm_ms, "⏱ Starting LLM call");
+
+    // Emit AgentStart for live dashboard
+    ctx.observer.record_event(&crate::observability::traits::ObserverEvent::AgentStart {
+        provider: route.provider.clone(),
+        model: route.model.clone(),
+    });
     let (llm_result, fallback_info) = scope_provider_fallback(async {
         let llm_result = loop {
             let loop_result = tokio::select! {
@@ -3113,6 +3133,19 @@ async fn process_channel_message(
     #[allow(clippy::cast_possible_truncation)]
     let total_ms = started_at.elapsed().as_millis() as u64;
     tracing::info!(llm_call_ms, total_ms, "⏱ LLM call completed");
+
+    // Record AgentEnd for real-time dashboard updates
+    let tokens_used = turn_tokens.load(std::sync::atomic::Ordering::Relaxed);
+    let cost_nanos = turn_cost_nanos.load(std::sync::atomic::Ordering::Relaxed);
+    let cost_usd = (cost_nanos as f64) / 1_000_000_000.0;
+    
+    ctx.observer.record_event(&crate::observability::traits::ObserverEvent::AgentEnd {
+        provider: route.provider.clone(),
+        model: route.model.clone(),
+        duration: started_at.elapsed(),
+        tokens_used: if tokens_used > 0 { Some(tokens_used) } else { None },
+        cost_usd: if cost_usd > 0.0 { Some(cost_usd) } else { None },
+    });
 
     if let Some(token) = typing_cancellation.as_ref() {
         token.cancel();
@@ -5189,7 +5222,10 @@ pub async fn doctor_channels(config: Config) -> Result<()> {
 
 /// Start all configured channels and route messages to the agent
 #[allow(clippy::too_many_lines)]
-pub async fn start_channels(config: Config) -> Result<()> {
+pub async fn start_channels(
+    config: Config,
+    external_event_tx: Option<tokio::sync::broadcast::Sender<serde_json::Value>>,
+) -> Result<()> {
     let provider_name = resolved_default_provider(&config);
     let provider_runtime_options = providers::provider_runtime_options_from_config(&config);
     let provider: Arc<dyn Provider> = Arc::from(
@@ -5223,8 +5259,18 @@ pub async fn start_channels(config: Config) -> Result<()> {
         );
     }
 
-    let observer: Arc<dyn Observer> =
-        Arc::from(observability::create_observer(&config.observability));
+    let observer: Arc<dyn Observer> = {
+        let base = observability::create_observer(&config.observability);
+        if let Some(tx) = external_event_tx {
+            Arc::new(crate::gateway::sse::BroadcastObserver::new(
+                Arc::from(base),
+                tx,
+                None,
+            ))
+        } else {
+            Arc::from(base)
+        }
+    };
     let runtime: Arc<dyn runtime::RuntimeAdapter> =
         Arc::from(runtime::create_runtime(&config.runtime)?);
     let security = Arc::new(SecurityPolicy::from_config(

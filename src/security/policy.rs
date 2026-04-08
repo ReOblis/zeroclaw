@@ -351,6 +351,26 @@ fn expand_user_path(path: &str) -> PathBuf {
     PathBuf::from(path)
 }
 
+/// Normalizes a path by canonicalizing it and stripping any redundant UNC prefix
+/// ('\\?\') added on Windows.
+///
+/// This ensures consistent path comparisons even when drive letters or UNC
+/// conventions differ between system calls and user input.
+pub fn canonicalize_and_strip_unc(path: &Path) -> PathBuf {
+    let canonical = path.canonicalize().unwrap_or_else(|_| path.to_path_buf());
+
+    #[cfg(target_os = "windows")]
+    {
+        let path_str = canonical.to_string_lossy().replace('/', "\\");
+        let stripped = path_str.strip_prefix(r"\\?\").unwrap_or(&path_str);
+        PathBuf::from(stripped.to_lowercase())
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        canonical
+    }
+}
+
 fn rootless_path(path: &Path) -> Option<PathBuf> {
     let mut relative = PathBuf::new();
 
@@ -368,6 +388,45 @@ fn rootless_path(path: &Path) -> Option<PathBuf> {
         None
     } else {
         Some(relative)
+    }
+}
+
+/// Robust path comparison that handles Windows case-insensitivity
+/// and strips UNC prefixes for uniform matching.
+fn paths_match_case_insensitive(path: &Path, base: &Path) -> bool {
+    #[cfg(not(target_os = "windows"))]
+    {
+        path.starts_with(base)
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        // Normalize slashes and casing for both to ensure a clean comparison base
+        let path_str = path.to_string_lossy().replace('/', "\\").to_lowercase();
+        let base_str = base.to_string_lossy().replace('/', "\\").to_lowercase();
+        
+        // Strip UNC prefixes from both for absolute consistency
+        let path_clean = path_str.strip_prefix(r"\\?\").unwrap_or(&path_str);
+        let base_clean = base_str.strip_prefix(r"\\?\").unwrap_or(&base_str);
+        
+        let matches = Path::new(path_clean).starts_with(Path::new(base_clean));
+        
+        // Log the comparison for debugging Windows "Access Denied" issues
+        if !matches {
+             tracing::info!(
+                path = %path_clean,
+                base = %base_clean,
+                "Windows path security match FAILED"
+            );
+        } else {
+             tracing::debug!(
+                path = %path_clean,
+                base = %base_clean,
+                "Windows path security match PASSED"
+            );
+        }
+        
+        matches
     }
 }
 
@@ -1368,19 +1427,26 @@ impl SecurityPolicy {
         // "/home" are not rejected.  This mirrors the priority order in
         // `is_resolved_path_allowed`.  See #2880.
         if expanded_path.is_absolute() {
-            let in_workspace = expanded_path.starts_with(&self.workspace_dir);
+            let in_workspace = paths_match_case_insensitive(&expanded_path, &self.workspace_dir);
             let in_allowed_root = self
                 .allowed_roots
                 .iter()
-                .any(|root| expanded_path.starts_with(root));
+                .any(|root| paths_match_case_insensitive(&expanded_path, root));
 
             if in_workspace || in_allowed_root {
+                // Double check forbidden paths even if in workspace
+                for forbidden in &self.forbidden_paths {
+                    let forbidden_path = expand_user_path(forbidden);
+                    if paths_match_case_insensitive(&expanded_path, &forbidden_path) {
+                        tracing::warn!(path = ?expanded_path, forbidden = ?forbidden_path, "Path blocked by forbidden list despite being in workspace");
+                        return false;
+                    }
+                }
                 return true;
             }
 
-            // Absolute path outside workspace/allowed roots — block when
-            // workspace_only, or fall through to forbidden-prefix check.
             if self.workspace_only {
+                tracing::warn!(path = ?expanded_path, workspace = ?self.workspace_dir, "Absolute path outside workspace blocked");
                 return false;
             }
         }
@@ -1388,7 +1454,7 @@ impl SecurityPolicy {
         // Block forbidden paths using path-component-aware matching
         for forbidden in &self.forbidden_paths {
             let forbidden_path = expand_user_path(forbidden);
-            if expanded_path.starts_with(forbidden_path) {
+            if paths_match_case_insensitive(&expanded_path, &forbidden_path) {
                 return false;
             }
         }
@@ -1399,41 +1465,39 @@ impl SecurityPolicy {
     /// Validate that a resolved path is inside the workspace or an allowed root.
     /// Call this AFTER joining `workspace_dir` + relative path and canonicalizing.
     pub fn is_resolved_path_allowed(&self, resolved: &Path) -> bool {
-        // Prefer canonical workspace root so `/a/../b` style config paths don't
-        // cause false positives or negatives.
-        let workspace_root = self
-            .workspace_dir
-            .canonicalize()
-            .unwrap_or_else(|_| self.workspace_dir.clone());
-        if resolved.starts_with(&workspace_root) {
+        // Use pre-canonicalized workspace root to avoid expensive syscalls
+        // and inconsistent UNC prefixes on Windows.
+        if paths_match_case_insensitive(resolved, &self.workspace_dir) {
+            // Even if in workspace, explicit forbidden paths take priority
+            for forbidden in &self.forbidden_paths {
+                let forbidden_path = expand_user_path(forbidden);
+                if paths_match_case_insensitive(resolved, &forbidden_path) {
+                    tracing::warn!(path = ?resolved, forbidden = ?forbidden_path, "Resolved path blocked by forbidden list");
+                    return false;
+                }
+            }
             return true;
         }
 
-        // Check extra allowed roots (e.g. shared skills directories) before
-        // forbidden checks so explicit allowlists can coexist with broad
-        // default forbidden roots such as `/home` and `/tmp`.
         for root in &self.allowed_roots {
-            let canonical = root.canonicalize().unwrap_or_else(|_| root.clone());
-            if resolved.starts_with(&canonical) {
+            if paths_match_case_insensitive(resolved, root) {
                 return true;
             }
         }
 
-        // For paths outside workspace/allowlist, block forbidden roots to
-        // prevent symlink escapes and sensitive directory access.
+        // For paths outside workspace/allowlist, block forbidden roots
         for forbidden in &self.forbidden_paths {
             let forbidden_path = expand_user_path(forbidden);
-            if resolved.starts_with(&forbidden_path) {
+            if paths_match_case_insensitive(resolved, &forbidden_path) {
                 return false;
             }
         }
 
-        // When workspace_only is disabled the user explicitly opted out of
-        // workspace confinement after forbidden-path checks are applied.
         if !self.workspace_only {
             return true;
         }
 
+        tracing::warn!(path = ?resolved, "Resolved path not in workspace/allowlist and workspace_only is enabled");
         false
     }
 
@@ -1450,10 +1514,17 @@ impl SecurityPolicy {
         let Some(config_dir) = self.runtime_config_dir() else {
             return false;
         };
-        if !resolved.starts_with(&config_dir) {
+        if !paths_match_case_insensitive(resolved, &config_dir) {
             return false;
         }
-        if resolved.parent() != Some(config_dir.as_path()) {
+        
+        // Ensure it's in the immediate directory (no subdirectories allowed for runtime config)
+        let resolved_str = resolved.to_string_lossy().replace('/', "\\").to_lowercase();
+        let config_dir_str = config_dir.to_string_lossy().replace('/', "\\").to_lowercase();
+        let stripped = resolved_str.strip_prefix(&config_dir_str).unwrap_or(&resolved_str);
+        let stripped_path = Path::new(stripped);
+        
+        if stripped_path.components().count() != 1 {
             return false;
         }
 
@@ -1548,8 +1619,19 @@ impl SecurityPolicy {
         if expanded.is_absolute() {
             expanded
         } else if let Some(workspace_hint) = rootless_path(&self.workspace_dir) {
-            if let Ok(stripped) = expanded.strip_prefix(&workspace_hint) {
-                if stripped.as_os_str().is_empty() {
+            let mut expanded_str = expanded.to_string_lossy().into_owned();
+            let mut hint_str = workspace_hint.to_string_lossy().into_owned();
+            
+            // Normalize slashes and casing on Windows for robust matching
+            if cfg!(target_os = "windows") {
+                expanded_str = expanded_str.replace('/', "\\").to_lowercase();
+                hint_str = hint_str.replace('/', "\\").to_lowercase();
+            }
+
+            if expanded_str.starts_with(&hint_str) {
+                let stripped = &expanded_str[hint_str.len()..];
+                let stripped = stripped.trim_start_matches(|c| c == '/' || c == '\\');
+                if stripped.is_empty() {
                     self.workspace_dir.clone()
                 } else {
                     self.workspace_dir.join(stripped)
@@ -1572,8 +1654,7 @@ impl SecurityPolicy {
             return false;
         }
         self.allowed_roots.iter().any(|root| {
-            let canonical = root.canonicalize().unwrap_or_else(|_| root.clone());
-            expanded.starts_with(&canonical) || expanded.starts_with(root)
+            paths_match_case_insensitive(&expanded, root)
         })
     }
 
@@ -1582,6 +1663,7 @@ impl SecurityPolicy {
         autonomy_config: &crate::config::AutonomyConfig,
         workspace_dir: &Path,
     ) -> Self {
+        let workspace_dir = canonicalize_and_strip_unc(workspace_dir);
         // When autonomy is Full, disable workspace_only so the agent can
         // access paths outside the workspace.  Forbidden-path checks still
         // apply, preventing access to sensitive system directories.
@@ -1594,7 +1676,7 @@ impl SecurityPolicy {
 
         Self {
             autonomy: autonomy_config.level,
-            workspace_dir: workspace_dir.to_path_buf(),
+            workspace_dir: workspace_dir.clone(),
             workspace_only: effective_workspace_only,
             allowed_commands: autonomy_config.allowed_commands.clone(),
             forbidden_paths: autonomy_config.forbidden_paths.clone(),
@@ -1603,11 +1685,12 @@ impl SecurityPolicy {
                 .iter()
                 .map(|root| {
                     let expanded = expand_user_path(root);
-                    if expanded.is_absolute() {
+                    let full = if expanded.is_absolute() {
                         expanded
                     } else {
                         workspace_dir.join(expanded)
-                    }
+                    };
+                    canonicalize_and_strip_unc(&full)
                 })
                 .collect(),
             max_actions_per_hour: autonomy_config.max_actions_per_hour,
@@ -1711,6 +1794,46 @@ impl SecurityPolicy {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn windows_path_case_insensitivity() {
+        let workspace = PathBuf::from(r"d:\ZeroClaw\workspace");
+        let autonomy = crate::config::AutonomyConfig {
+            level: AutonomyLevel::Supervised,
+            workspace_only: true,
+            ..Default::default()
+        };
+        // Simulation of from_config which now canonicalizes.
+        // We manually normalize for the test since canonicalize() needs the path to exist.
+        let mut policy = SecurityPolicy::from_config(&autonomy, &workspace);
+        // Force the workspace_dir to our normalized test path
+        policy.workspace_dir = workspace;
+
+        // Same drive, same case
+        assert!(policy.is_path_allowed(r"d:\ZeroClaw\workspace\file.txt"));
+        // Same drive, different case
+        assert!(policy.is_path_allowed(r"D:\ZeroClaw\workspace\file.txt"));
+        // Different drive
+        assert!(!policy.is_path_allowed(r"C:\ZeroClaw\workspace\file.txt"));
+    }
+
+    #[test]
+    #[cfg(target_os = "windows")]
+    fn windows_unc_path_handling() {
+        let workspace = PathBuf::from(r"d:\ZeroClaw\workspace");
+        let autonomy = crate::config::AutonomyConfig {
+            level: AutonomyLevel::Supervised,
+            workspace_only: true,
+            ..Default::default()
+        };
+        let mut policy = SecurityPolicy::from_config(&autonomy, &workspace);
+        policy.workspace_dir = workspace;
+
+        // UNC prefix should be handled
+        assert!(policy.is_path_allowed(r"\\?\d:\ZeroClaw\workspace\file.txt"));
+        assert!(policy.is_resolved_path_allowed(Path::new(r"\\?\D:\ZeroClaw\workspace\file.txt")));
+    }
 
     fn default_policy() -> SecurityPolicy {
         SecurityPolicy::default()
@@ -3454,5 +3577,61 @@ mod tests {
         let t = PerSenderTracker::new();
         // Key "ghost" has never been recorded — should not be exhausted at max=1
         assert!(!t.is_exhausted("ghost", 1));
+    }
+
+    #[test]
+    fn windows_case_insensitive_path_handling() {
+        #[cfg(target_os = "windows")]
+        {
+            // Use PathBuf::from and canonicalize_and_strip_unc to simulate SecurityPolicy::from_config
+            let workspace = canonicalize_and_strip_unc(&std::env::current_dir().unwrap());
+            let mut p = SecurityPolicy {
+                autonomy: AutonomyLevel::Supervised,
+                workspace_dir: workspace.clone(),
+                workspace_only: true,
+                ..SecurityPolicy::default()
+            };
+
+            // Test current dir with different cases
+            let current_dir_str = workspace.to_string_lossy();
+            let upper_dir = current_dir_str.to_uppercase();
+            let lower_dir = current_dir_str.to_lowercase();
+
+            // Matches current dir regardless of case
+            assert!(p.is_path_allowed(&upper_dir));
+            assert!(p.is_path_allowed(&lower_dir));
+
+            // Test subpath
+            let subfile = workspace.join("test.txt");
+            let subfile_upper = subfile.to_string_lossy().to_uppercase();
+            assert!(p.is_path_allowed(&subfile_upper));
+
+            // Test mixed slashes
+            let mixed_slash = workspace.to_string_lossy().replace("\\", "/");
+            let subfile_mixed = format!("{}/test.txt", mixed_slash);
+            assert!(p.is_path_allowed(&subfile_mixed));
+            
+            let resolved_mixed = p.resolve_tool_path(&subfile_mixed);
+            assert!(paths_match_case_insensitive(&resolved_mixed, &workspace));
+            assert!(p.is_resolved_path_allowed(&resolved_mixed));
+
+            // Test resolve_tool_path with different case workspace
+            let resolved = p.resolve_tool_path(&subfile_upper);
+            assert!(paths_match_case_insensitive(&resolved, &workspace));
+            assert!(p.is_resolved_path_allowed(&resolved));
+
+            // Test forbidden paths
+            let forbidden = workspace.join("secrets");
+            p.forbidden_paths.push(forbidden.to_string_lossy().to_string());
+            
+            // Should be blocked regardless of case
+            assert!(!p.is_path_allowed(&forbidden.to_string_lossy()));
+            assert!(!p.is_path_allowed(&forbidden.to_string_lossy().to_uppercase()));
+            
+            // is_resolved_path_allowed should also block it
+            assert!(!p.is_resolved_path_allowed(&forbidden));
+            let forbidden_upper = PathBuf::from(forbidden.to_string_lossy().to_uppercase());
+            assert!(!p.is_resolved_path_allowed(&forbidden_upper));
+        }
     }
 }

@@ -74,6 +74,8 @@ pub struct Agent {
     /// Hook runner for tool-call auditing and lifecycle side effects.
     /// See issue #5462.
     hook_runner: Option<Arc<crate::hooks::HookRunner>>,
+    pub turn_tokens: u64,
+    pub turn_cost_usd: f64,
 }
 
 pub struct AgentBuilder {
@@ -336,6 +338,8 @@ impl AgentBuilder {
                 .unwrap_or(crate::security::AutonomyLevel::Supervised),
             activated_tools: self.activated_tools,
             hook_runner: self.hook_runner,
+            turn_tokens: 0,
+            turn_cost_usd: 0.0,
         })
     }
 }
@@ -351,6 +355,11 @@ impl Agent {
 
     pub fn clear_history(&mut self) {
         self.history.clear();
+    }
+
+    pub fn reset_turn_stats(&mut self) {
+        self.turn_tokens = 0;
+        self.turn_cost_usd = 0.0;
     }
 
     pub fn set_memory_session_id(&mut self, session_id: Option<String>) {
@@ -926,6 +935,14 @@ impl Agent {
                 Err(err) => return Err(err),
             };
 
+            // Record usage stats
+            if let Some(usage) = &response.usage {
+                let input = usage.input_tokens.unwrap_or(0);
+                let output = usage.output_tokens.unwrap_or(0);
+                let total = input + output;
+                self.turn_tokens += total;
+            }
+
             let (text, calls) = self.tool_dispatcher.parse_response(&response);
             if calls.is_empty() {
                 let final_text = if text.is_empty() {
@@ -1192,6 +1209,14 @@ impl Agent {
                 }
             };
 
+            // Record usage stats
+            if let Some(usage) = &response.usage {
+                let input = usage.input_tokens.unwrap_or(0);
+                let output = usage.output_tokens.unwrap_or(0);
+                let total = input + output;
+                self.turn_tokens += total;
+            }
+
             let (text, calls) = self.tool_dispatcher.parse_response(&response);
             if calls.is_empty() {
                 let final_text = if text.is_empty() {
@@ -1354,8 +1379,8 @@ pub async fn run(
         provider: provider_name,
         model: model_name,
         duration: start.elapsed(),
-        tokens_used: None,
-        cost_usd: None,
+        tokens_used: if agent.turn_tokens > 0 { Some(agent.turn_tokens) } else { None },
+        cost_usd: if agent.turn_cost_usd > 0.0 { Some(agent.turn_cost_usd) } else { None },
     });
 
     Ok(())

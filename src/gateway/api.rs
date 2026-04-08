@@ -133,6 +133,47 @@ pub async fn handle_api_status(
     Json(body).into_response()
 }
 
+/// GET /api/channels — return detailed channel status
+pub async fn handle_api_channels(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let config = state.config.lock().clone();
+    let health = crate::health::snapshot();
+
+    let mut channels_list = Vec::new();
+
+    for (channel_config, present) in config.channels_config.channels() {
+        let name = channel_config.name();
+        
+        let component_key = format!("channel:{}", name.to_ascii_lowercase());
+        let (status, hp, msg_count, last_msg) = if let Some(comp) = health.components.get(&component_key) {
+            let is_healthy = comp.status.to_ascii_lowercase() == "ok" || comp.status.to_ascii_lowercase() == "active";
+            let hp = if is_healthy { "healthy" } else { "degraded" };
+            let st = if is_healthy { "active" } else { "error" };
+            (st, hp, comp.message_count, comp.last_message_at.clone())
+        } else {
+            ("inactive", "down", 0, None)
+        };
+
+        channels_list.push(serde_json::json!({
+            "name": name,
+            "type": name,
+            "enabled": present,
+            "status": status,
+            "message_count": msg_count,
+            "last_message_at": last_msg,
+            "health": hp,
+        }));
+    }
+
+    Json(serde_json::json!({ "channels": channels_list })).into_response()
+}
+
 /// GET /api/config — current config (api_key masked)
 pub async fn handle_api_config_get(
     State(state): State<AppState>,

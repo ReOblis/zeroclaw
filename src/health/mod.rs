@@ -12,6 +12,8 @@ pub struct ComponentHealth {
     pub last_ok: Option<String>,
     pub last_error: Option<String>,
     pub restart_count: u64,
+    pub message_count: u64,
+    pub last_message_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -54,6 +56,8 @@ where
             last_ok: None,
             last_error: None,
             restart_count: 0,
+            message_count: 0,
+            last_message_at: None,
         });
     update(entry);
     entry.updated_at = now;
@@ -79,6 +83,13 @@ pub fn mark_component_error(component: &str, error: impl ToString) {
 pub fn bump_component_restart(component: &str) {
     upsert_component(component, |entry| {
         entry.restart_count = entry.restart_count.saturating_add(1);
+    });
+}
+
+pub fn bump_component_message(component: &str) {
+    upsert_component(component, |entry| {
+        entry.message_count = entry.message_count.saturating_add(1);
+        entry.last_message_at = Some(now_rfc3339());
     });
 }
 

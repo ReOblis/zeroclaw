@@ -45,8 +45,16 @@ impl XmlToolDispatcher {
             }
 
             if let Some(end) = remaining[start..].find("</tool_call>") {
-                let inner = &remaining[start + 11..start + end];
-                match serde_json::from_str::<Value>(inner.trim()) {
+                let mut inner = remaining[start + 11..start + end].trim();
+                if inner.starts_with("```json") {
+                    inner = inner[7..].trim_start();
+                } else if inner.starts_with("```") {
+                    inner = inner[3..].trim_start();
+                }
+                if inner.ends_with("```") {
+                    inner = inner[..inner.len() - 3].trim_end();
+                }
+                match serde_json::from_str::<Value>(inner) {
                     Ok(parsed) => {
                         let name = parsed
                             .get("name")
@@ -131,10 +139,10 @@ impl ToolDispatcher for XmlToolDispatcher {
     fn prompt_instructions(&self, _tools: &[Box<dyn Tool>]) -> String {
         let mut instructions = String::new();
         instructions.push_str("## Tool Use Protocol\n\n");
-        instructions
-            .push_str("To use a tool, wrap a JSON object in <tool_call></tool_call> tags:\n\n");
         instructions.push_str(
-            "```\n<tool_call>\n{\"name\": \"tool_name\", \"arguments\": {\"param\": \"value\"}}\n</tool_call>\n```\n\n",
+            "To use a tool, output a JSON object MUST be wrapped exactly in <tool_call></tool_call> tags.\n\
+             DO NOT wrap the json in markdown blocks:\n\n\
+             <tool_call>\n{\"name\": \"tool_name\", \"arguments\": {\"param\": \"value\"}}\n</tool_call>\n\n"
         );
 
         instructions
@@ -259,6 +267,23 @@ mod tests {
         let response = ChatResponse {
             text: Some(
                 "Checking\n<tool_call>{\"name\":\"shell\",\"arguments\":{\"command\":\"ls\"}}</tool_call>"
+                    .into(),
+            ),
+            tool_calls: vec![],
+            usage: None,
+            reasoning_content: None,
+        };
+        let dispatcher = XmlToolDispatcher;
+        let (_, calls) = dispatcher.parse_response(&response);
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "shell");
+    }
+
+    #[test]
+    fn xml_dispatcher_parses_tool_calls_with_markdown() {
+        let response = ChatResponse {
+            text: Some(
+                "Checking\n<tool_call>\n```json\n{\"name\":\"shell\",\"arguments\":{\"command\":\"ls\"}}\n```\n</tool_call>"
                     .into(),
             ),
             tool_calls: vec![],

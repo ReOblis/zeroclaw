@@ -2678,10 +2678,17 @@ pub(crate) async fn run_tool_call_loop(
                 });
 
                 // Record cost via task-local tracker (no-op when not scoped)
-                let _ = resp
-                    .usage
-                    .as_ref()
-                    .and_then(|usage| record_tool_loop_cost_usage(provider_name, model, usage));
+                let usage = resp.usage.clone().unwrap_or_else(|| {
+                    crate::providers::traits::TokenUsage {
+                        input_tokens: Some(crate::agent::loop_::estimate_history_tokens(
+                            &prepared_messages.messages,
+                        ) as u64),
+                        output_tokens: Some((resp.text_or_empty().len() / 4) as u64),
+                        cached_input_tokens: None,
+                    }
+                });
+                
+                let _ = record_tool_loop_cost_usage(provider_name, model, &usage);
 
                 let response_text = resp.text_or_empty().to_string();
                 // First try native structured tool calls (OpenAI-format).
@@ -3641,6 +3648,10 @@ pub async fn run(
         .unwrap_or("anthropic/claude-sonnet-4")
         .to_string();
 
+    let started_at = std::time::Instant::now();
+    let turn_tokens = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let turn_cost_nanos = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+
     let provider_runtime_options = providers::provider_runtime_options_from_config(&config);
 
     let mut provider: Box<dyn Provider> = providers::create_routed_provider_with_options(
@@ -3865,7 +3876,12 @@ pub async fn run(
     let cost_tracking_context: Option<ToolLoopCostTrackingContext> =
         crate::cost::CostTracker::get_or_init_global(config.cost.clone(), &config.workspace_dir)
             .map(|tracker| {
-                ToolLoopCostTrackingContext::new(tracker, Arc::new(config.cost.prices.clone()))
+                ToolLoopCostTrackingContext {
+                    tracker,
+                    prices: std::sync::Arc::new(config.cost.prices.clone()),
+                    turn_tokens: turn_tokens.clone(),
+                    turn_cost_nanos: turn_cost_nanos.clone(),
+                }
             });
 
     // ── Execute ──────────────────────────────────────────────────
@@ -3990,7 +4006,7 @@ pub async fn run(
                         config.agent.max_tool_result_chars,
                         config.agent.max_context_tokens,
                         None, // shared_budget
-                    ),
+                    )
                 )
                 .await
             {
@@ -4271,7 +4287,6 @@ pub async fn run(
                 }
             });
 
-            let response = loop {
                 match TOOL_LOOP_COST_TRACKING_CONTEXT
                     .scope(
                         cost_tracking_context.clone(),
@@ -4452,13 +4467,17 @@ pub async fn run(
         }
     }
 
-    let duration = start.elapsed();
+    let duration = started_at.elapsed();
+    let final_tokens = turn_tokens.load(std::sync::atomic::Ordering::Relaxed);
+    let final_cost_nanos = turn_cost_nanos.load(std::sync::atomic::Ordering::Relaxed);
+    let final_cost_usd = (final_cost_nanos as f64) / 1_000_000_000.0;
+
     observer.record_event(&ObserverEvent::AgentEnd {
         provider: provider_name.to_string(),
         model: model_name.to_string(),
         duration,
-        tokens_used: None,
-        cost_usd: None,
+        tokens_used: if final_tokens > 0 { Some(final_tokens) } else { None },
+        cost_usd: if final_cost_usd > 0.0 { Some(final_cost_usd) } else { None },
     });
 
     Ok(final_output)
@@ -4471,6 +4490,7 @@ pub async fn process_message(
     message: &str,
     session_id: Option<&str>,
 ) -> Result<String> {
+    let started_at = std::time::Instant::now();
     let observer: Arc<dyn Observer> =
         Arc::from(observability::create_observer(&config.observability));
     let runtime: Arc<dyn runtime::RuntimeAdapter> =
@@ -4787,26 +4807,52 @@ pub async fn process_message(
         excluded_tools.extend(config.autonomy.non_cli_excluded_tools.iter().cloned());
     }
 
-    agent_turn(
-        provider.as_ref(),
-        &mut history,
-        &tools_registry,
-        observer.as_ref(),
-        provider_name,
-        &model_name,
-        effective_temperature,
-        true,
-        "daemon",
-        None,
-        &config.multimodal,
-        config.agent.max_tool_iterations,
-        Some(&approval_manager),
-        &excluded_tools,
-        &config.agent.tool_call_dedup_exempt,
-        activated_handle_pm.as_ref(),
-        None,
-    )
-    .await
+    let turn_tokens = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let turn_cost_nanos = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+    let cost_tracking_context = crate::agent::loop_::ToolLoopCostTrackingContext {
+        tracker: crate::cost::CostTracker::get_or_init_global(config.cost.clone(), &config.workspace_dir)
+            .ok_or_else(|| anyhow::anyhow!("Cost tracker not initialized"))?,
+        prices: std::sync::Arc::new(config.cost.prices.clone()),
+        turn_tokens: turn_tokens.clone(),
+        turn_cost_nanos: turn_cost_nanos.clone(),
+    };
+
+    let result = crate::agent::loop_::TOOL_LOOP_COST_TRACKING_CONTEXT
+        .scope(Some(cost_tracking_context), agent_turn(
+            provider.as_ref(),
+            &mut history,
+            &tools_registry,
+            observer.as_ref(),
+            provider_name,
+            &model_name,
+            effective_temperature,
+            true,
+            "daemon",
+            None,
+            &config.multimodal,
+            config.agent.max_tool_iterations,
+            Some(&approval_manager),
+            &excluded_tools,
+            &config.agent.tool_call_dedup_exempt,
+            activated_handle_pm.as_ref(),
+            None,
+        ))
+        .await;
+
+    // Record AgentEnd for real-time dashboard updates
+    let tokens_used = turn_tokens.load(std::sync::atomic::Ordering::Relaxed);
+    let cost_nanos = turn_cost_nanos.load(std::sync::atomic::Ordering::Relaxed);
+    let cost_usd = (cost_nanos as f64) / 1_000_000_000.0;
+    
+    observer.record_event(&crate::observability::traits::ObserverEvent::AgentEnd {
+        provider: provider_name.to_string(),
+        model: model_name.to_string(),
+        duration: started_at.elapsed(),
+        tokens_used: if tokens_used > 0 { Some(tokens_used) } else { None },
+        cost_usd: if cost_usd > 0.0 { Some(cost_usd) } else { None },
+    });
+
+    result
 }
 
 #[cfg(test)]
