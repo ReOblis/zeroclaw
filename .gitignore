@@ -15,6 +15,10 @@ docker-compose.override.yml
 # Environment files (may contain secrets)
 .env
 
+# Config files containing API keys / bot tokens
+setup/config.toml
+dev/config.template.toml
+
 # Python virtual environments
 
 .venv/

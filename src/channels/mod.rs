@@ -4434,7 +4434,8 @@ fn build_channel_by_id(config: &Config, channel_id: &str) -> Result<Arc<dyn Chan
                 mm.allowed_users.clone(),
                 mm.thread_replies.unwrap_or(true),
                 mm.mention_only.unwrap_or(false),
-            )))
+            )
+            .with_workspace_dir(config.workspace_dir.clone())))
         }
         "signal" => {
             let sg = config

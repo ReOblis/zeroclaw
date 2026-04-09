@@ -5,6 +5,7 @@ use parking_lot::Mutex;
 use std::sync::Arc;
 
 const MAX_MATTERMOST_AUDIO_BYTES: u64 = 25 * 1024 * 1024;
+const MAX_MATTERMOST_IMAGE_BYTES: u64 = 10 * 1024 * 1024;
 
 /// Mattermost channel — polls channel posts via REST API v4.
 /// Mattermost is API-compatible with many Slack patterns but uses a dedicated v4 structure.
@@ -24,6 +25,7 @@ pub struct MattermostChannel {
     proxy_url: Option<String>,
     transcription: Option<crate::config::TranscriptionConfig>,
     transcription_manager: Option<Arc<super::transcription::TranscriptionManager>>,
+    workspace_dir: Option<std::path::PathBuf>,
 }
 
 impl MattermostChannel {
@@ -48,7 +50,14 @@ impl MattermostChannel {
             proxy_url: None,
             transcription: None,
             transcription_manager: None,
+            workspace_dir: None,
         }
+    }
+
+    /// Configure workspace directory for saving downloaded attachments.
+    pub fn with_workspace_dir(mut self, dir: std::path::PathBuf) -> Self {
+        self.workspace_dir = Some(dir);
+        self
     }
 
     /// Set a per-channel proxy URL that overrides the global proxy config.
@@ -116,6 +125,106 @@ impl MattermostChannel {
         (id, username)
     }
 
+    /// Download file bytes from Mattermost.
+    async fn download_file_bytes(&self, file_id: &str) -> anyhow::Result<Vec<u8>> {
+        let response = self
+            .http_client()
+            .get(format!("{}/api/v4/files/{}", self.base_url, file_id))
+            .bearer_auth(&self.bot_token)
+            .send()
+            .await?;
+
+        if !response.status().is_success() {
+            anyhow::bail!(
+                "Mattermost: file download returned {}: {file_id}",
+                response.status()
+            );
+        }
+
+        Ok(response.bytes().await?.to_vec())
+    }
+
+    /// Process image attachments in a Mattermost post.
+    ///
+    /// Downloads images to the workspace and appends [IMAGE:/path] markers
+    /// to the message content for the multimodal pipeline.
+    async fn process_image_attachments(
+        &self,
+        post: &serde_json::Value,
+        content: &mut String,
+        channel_id: &str,
+    ) {
+        let Some(workspace) = &self.workspace_dir else {
+            return;
+        };
+
+        let files = post
+            .get("metadata")
+            .and_then(|m| m.get("files"))
+            .and_then(|f| f.as_array());
+
+        let Some(files) = files else { return };
+
+        tracing::info!("Mattermost: processing {} file attachments", files.len());
+
+        let save_dir = workspace.join("mattermost_files");
+        if let Err(e) = tokio::fs::create_dir_all(&save_dir).await {
+            tracing::warn!("Failed to create mattermost_files directory: {e}");
+            return;
+        }
+
+        for file in files {
+            if !is_image_file(file) {
+                tracing::debug!("Mattermost: skipping non-image attachment: {:?}", file.get("name"));
+                continue;
+            }
+
+            let Some(file_id) = file.get("id").and_then(|i| i.as_str()) else {
+                continue;
+            };
+
+            if let Some(size) = file.get("size").and_then(|s| s.as_u64()) {
+                if size > MAX_MATTERMOST_IMAGE_BYTES {
+                    tracing::info!(
+                        "Skipping Mattermost image {file_id}: size {size} exceeds limit"
+                    );
+                    continue;
+                }
+            }
+
+            let file_data = match self.download_file_bytes(file_id).await {
+                Ok(d) => d,
+                Err(e) => {
+                    tracing::warn!("Failed to download Mattermost image {file_id}: {e}");
+                    continue;
+                }
+            };
+
+            let ext = file.get("extension").and_then(|e| e.as_str()).unwrap_or("jpg");
+            let local_filename = format!("image_{channel_id}_{file_id}.{ext}");
+            let local_path = save_dir.join(&local_filename);
+
+            if let Err(e) = tokio::fs::write(&local_path, &file_data).await {
+                tracing::warn!(
+                    "Failed to save Mattermost image to {}: {e}",
+                    local_path.display()
+                );
+                continue;
+            }
+
+            // Append [IMAGE:] marker so the multimodal pipeline sees it.
+            if !content.is_empty() {
+                content.push_str("\n\n");
+            }
+            content.push_str(&format!("[IMAGE:{}]", local_path.display()));
+            tracing::info!(
+                "Mattermost: attached image {} to message: {}",
+                file_id,
+                local_path.display()
+            );
+        }
+    }
+
     async fn try_transcribe_audio_attachment(&self, post: &serde_json::Value) -> Option<String> {
         let config = self.transcription.as_ref()?;
         let manager = self.transcription_manager.as_deref()?;
@@ -145,41 +254,10 @@ impl MattermostChannel {
             .and_then(|n| n.as_str())
             .unwrap_or("audio");
 
-        let response = match self
-            .http_client()
-            .get(format!("{}/api/v4/files/{}", self.base_url, file_id))
-            .bearer_auth(&self.bot_token)
-            .send()
-            .await
-        {
-            Ok(r) => r,
-            Err(e) => {
-                tracing::warn!("Mattermost: audio download failed for {file_id}: {e}");
-                return None;
-            }
-        };
-
-        if !response.status().is_success() {
-            tracing::warn!(
-                "Mattermost: audio download returned {}: {file_id}",
-                response.status()
-            );
-            return None;
-        }
-
-        if let Some(content_length) = response.content_length() {
-            if content_length > MAX_MATTERMOST_AUDIO_BYTES {
-                tracing::warn!(
-                    "Mattermost: audio file too large ({content_length} bytes): {file_id}"
-                );
-                return None;
-            }
-        }
-
-        let bytes = match response.bytes().await {
+        let bytes = match self.download_file_bytes(file_id).await {
             Ok(b) => b,
             Err(e) => {
-                tracing::warn!("Mattermost: failed to read audio bytes for {file_id}: {e}");
+                tracing::warn!("Mattermost: audio download failed for {file_id}: {e}");
                 return None;
             }
         };
@@ -319,7 +397,7 @@ impl Channel for MattermostChannel {
                         None
                     };
 
-                    if let Some(channel_msg) = self.parse_mattermost_post(
+                    if let Some(mut channel_msg) = self.parse_mattermost_post(
                         post,
                         &bot_user_id,
                         &bot_username,
@@ -327,6 +405,10 @@ impl Channel for MattermostChannel {
                         &channel_id,
                         effective_text.as_deref(),
                     ) {
+                        // Process images after basic post parsing
+                        self.process_image_attachments(post, &mut channel_msg.content, &channel_id)
+                            .await;
+
                         if tx.send(channel_msg).await.is_err() {
                             return Ok(());
                         }
@@ -428,6 +510,10 @@ impl MattermostChannel {
             text
         };
 
+        if effective_text.is_empty() && post.get("metadata").and_then(|m| m.get("files")).is_none() {
+            return None;
+        }
+
         if !self.is_user_allowed(user_id) {
             tracing::warn!("Mattermost: ignoring message from unauthorized user: {user_id}");
             return None;
@@ -487,6 +573,18 @@ fn is_audio_file(file: &serde_json::Value) -> bool {
     matches!(
         ext.to_ascii_lowercase().as_str(),
         "ogg" | "mp3" | "m4a" | "wav" | "opus" | "flac"
+    )
+}
+
+fn is_image_file(file: &serde_json::Value) -> bool {
+    let mime = file.get("mime_type").and_then(|m| m.as_str()).unwrap_or("");
+    if mime.starts_with("image/") {
+        return true;
+    }
+    let ext = file.get("extension").and_then(|e| e.as_str()).unwrap_or("");
+    matches!(
+        ext.to_ascii_lowercase().as_str(),
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp"
     )
 }
 
