@@ -315,6 +315,12 @@ export function getSession(id: string): Promise<Session> {
   return apiFetch<Session>(`/api/sessions/${encodeURIComponent(id)}`);
 }
 
+export function deleteSession(id: string): Promise<void> {
+  return apiFetch<void>(`/api/sessions/${encodeURIComponent(id)}`, {
+    method: 'DELETE',
+  });
+}
+
 /** Load persisted gateway WebSocket chat transcript for the dashboard Agent Chat. */
 export function getSessionMessages(id: string): Promise<SessionMessagesResponse> {
   return apiFetch<SessionMessagesResponse>(

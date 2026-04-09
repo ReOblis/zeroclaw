@@ -12,9 +12,10 @@ import {
   MessageSquare,
   ChevronRight,
   Wifi,
+  Trash2,
 } from 'lucide-react';
 import type { StatusResponse, CostSummary, Session, ChannelDetail } from '@/types/api';
-import { getStatus, getCost, getSessions, getChannels } from '@/lib/api';
+import { getStatus, getCost, getSessions, getChannels, deleteSession } from '@/lib/api';
 import { useSSE } from '@/hooks/useSSE';
 import { t } from '@/lib/i18n';
 
@@ -264,15 +265,15 @@ function OverviewTab({
               style={
                 showAllChannels
                   ? {
-                      background: "rgba(var(--pc-accent-rgb), 0.1)",
-                      borderColor: "rgba(var(--pc-accent-rgb), 0.3)",
-                      color: "var(--pc-accent-light)",
-                    }
+                    background: "rgba(var(--pc-accent-rgb), 0.1)",
+                    borderColor: "rgba(var(--pc-accent-rgb), 0.3)",
+                    color: "var(--pc-accent-light)",
+                  }
                   : {
-                      background: "rgba(0, 230, 138, 0.08)",
-                      borderColor: "rgba(0, 230, 138, 0.25)",
-                      color: "#34d399",
-                    }
+                    background: "rgba(0, 230, 138, 0.08)",
+                    borderColor: "rgba(0, 230, 138, 0.25)",
+                    color: "#34d399",
+                  }
               }
               aria-label={
                 showAllChannels
@@ -325,9 +326,9 @@ function OverviewTab({
                       style={
                         active
                           ? {
-                              background: "var(--color-status-success)",
-                              boxShadow: "0 0 6px var(--color-status-success)",
-                            }
+                            background: "var(--color-status-success)",
+                            boxShadow: "0 0 6px var(--color-status-success)",
+                          }
                           : { background: "var(--pc-text-faint)" }
                       }
                     />
@@ -584,6 +585,31 @@ function SessionsTab() {
                 </p>
               </div>
             ))}
+
+            <div className="pt-4 border-t" style={{ borderColor: 'var(--pc-border)' }}>
+              <button
+                onClick={async () => {
+                  if (selectedSession && confirm('Delete this session?')) {
+                    try {
+                      await deleteSession(selectedSession.session_id);
+                      setSelectedSession(null);
+                      loadSessions();
+                    } catch (err: any) {
+                      alert(`Failed to delete session: ${err.message}`);
+                    }
+                  }
+                }}
+                className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl transition-all font-medium text-sm"
+                style={{
+                  background: 'rgba(255, 68, 102, 0.1)',
+                  color: '#f87171',
+                  border: '1px solid rgba(255, 68, 102, 0.2)',
+                }}
+              >
+                <Trash2 className="h-4 w-4" />
+                {t('common.delete') || 'Delete'}
+              </button>
+            </div>
           </div>
         ) : (
           <p className="text-sm py-8 text-center" style={{ color: "var(--pc-text-faint)" }}>
@@ -812,7 +838,7 @@ export default function Dashboard() {
   if (!status || !cost) {
     return (
       <div className="flex items-center justify-center h-64">
-        <div className="h-8 w-8 border-2 rounded-full animate-spin" style={{ borderColor: "var(--pc-border)", borderTopColor: "var(--pc-accent)", }}/>
+        <div className="h-8 w-8 border-2 rounded-full animate-spin" style={{ borderColor: "var(--pc-border)", borderTopColor: "var(--pc-accent)", }} />
       </div>
     );
   }
@@ -832,14 +858,14 @@ export default function Dashboard() {
             style={
               activeTab === id
                 ? {
-                    background: "var(--pc-bg-primary)",
-                    color: "var(--pc-accent)",
-                    boxShadow: "0 1px 3px rgba(0, 0, 0, 0.1)",
-                  }
+                  background: "var(--pc-bg-primary)",
+                  color: "var(--pc-accent)",
+                  boxShadow: "0 1px 3px rgba(0, 0, 0, 0.1)",
+                }
                 : {
-                    background: "transparent",
-                    color: "var(--pc-text-muted)",
-                  }
+                  background: "transparent",
+                  color: "var(--pc-text-muted)",
+                }
             }
             onMouseEnter={(e) => {
               if (activeTab !== id) {

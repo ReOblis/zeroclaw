@@ -45,6 +45,7 @@ pub mod file_read;
 pub mod file_write;
 pub mod gemini_cli;
 pub mod git_operations;
+pub mod github_operations;
 pub mod glob_search;
 pub mod google_workspace;
 #[cfg(feature = "hardware")]
@@ -146,6 +147,7 @@ pub use file_read::FileReadTool;
 pub use file_write::FileWriteTool;
 pub use gemini_cli::GeminiCliTool;
 pub use git_operations::GitOperationsTool;
+pub use github_operations::GitHubOperationsTool;
 pub use glob_search::GlobSearchTool;
 pub use google_workspace::GoogleWorkspaceTool;
 #[cfg(feature = "hardware")]
@@ -444,6 +446,10 @@ pub fn all_tools_with_runtime(
         Arc::new(GitOperationsTool::new(
             security.clone(),
             workspace_dir.to_path_buf(),
+        )),
+        Arc::new(GitHubOperationsTool::new(
+            root_config.github.clone(),
+            security.clone(),
         )),
         Arc::new(PushoverTool::new(
             security.clone(),

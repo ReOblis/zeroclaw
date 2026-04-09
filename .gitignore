@@ -18,6 +18,9 @@ docker-compose.override.yml
 # Config files containing API keys / bot tokens
 setup/config.toml
 dev/config.template.toml
+.zeroclaw/config.toml
+config.toml
+*.config.toml
 
 # Python virtual environments
 

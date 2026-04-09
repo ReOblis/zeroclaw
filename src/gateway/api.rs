@@ -1320,33 +1320,50 @@ pub async fn handle_api_sessions_list(
         return e.into_response();
     }
 
-    let Some(ref backend) = state.session_backend else {
-        return Json(serde_json::json!({
-            "sessions": [],
-            "message": "Session persistence is disabled"
-        }))
-        .into_response();
-    };
+    let mut all_session_entries = Vec::new();
 
-    let all_metadata = backend.list_sessions_with_metadata();
-    let gw_sessions: Vec<serde_json::Value> = all_metadata
-        .into_iter()
-        .filter_map(|meta| {
-            let session_id = meta.key.strip_prefix("gw_")?;
+    // 1. Gather sessions from SQLite backend (Gateway WS chat)
+    if let Some(ref backend) = state.session_backend {
+        let metadata = backend.list_sessions_with_metadata();
+        for meta in metadata {
+            // Strip "gw_" prefix for the UI if present, but keep original for lookup
+            let display_id = meta.key.strip_prefix("gw_").unwrap_or(&meta.key);
             let mut entry = serde_json::json!({
-                "session_id": session_id,
+                "session_id": display_id,
                 "created_at": meta.created_at.to_rfc3339(),
                 "last_activity": meta.last_activity.to_rfc3339(),
                 "message_count": meta.message_count,
+                "source": "gateway",
             });
             if let Some(name) = meta.name {
                 entry["name"] = serde_json::Value::String(name);
             }
-            Some(entry)
-        })
-        .collect();
+            all_session_entries.push(entry);
+        }
+    }
 
-    Json(serde_json::json!({ "sessions": gw_sessions })).into_response()
+    // 2. Gather sessions from JSONL store (Channel conversations)
+    if let Some(ref store) = state.session_store {
+        let metadata = store.list_sessions_with_metadata();
+        for meta in metadata {
+            all_session_entries.push(serde_json::json!({
+                "session_id": meta.key,
+                "created_at": meta.created_at.to_rfc3339(),
+                "last_activity": meta.last_activity.to_rfc3339(),
+                "message_count": meta.message_count,
+                "source": "channel",
+            }));
+        }
+    }
+
+    // Sort by last activity (most recent first)
+    all_session_entries.sort_by(|a, b| {
+        let a_time = a["last_activity"].as_str().unwrap_or("");
+        let b_time = b["last_activity"].as_str().unwrap_or("");
+        b_time.cmp(a_time)
+    });
+
+    Json(serde_json::json!({ "sessions": all_session_entries })).into_response()
 }
 
 /// GET /api/sessions/{id}/messages — load persisted gateway WebSocket chat transcript
@@ -1359,21 +1376,43 @@ pub async fn handle_api_session_messages(
         return e.into_response();
     }
 
-    let Some(ref backend) = state.session_backend else {
-        return Json(serde_json::json!({
-            "session_id": id,
-            "messages": [],
-            "session_persistence": false,
-        }))
-        .into_response();
-    };
+    let mut messages: Vec<serde_json::Value> = Vec::new();
+    let mut found = false;
 
-    let session_key = format!("gw_{id}");
-    let msgs = backend.load(&session_key);
-    let messages: Vec<serde_json::Value> = msgs
-        .into_iter()
-        .map(|m| serde_json::json!({ "role": m.role, "content": m.content }))
-        .collect();
+    // 1. Try SQLite backend first
+    if let Some(ref backend) = state.session_backend {
+        let session_key = format!("gw_{id}");
+        let msgs = backend.load(&session_key);
+        if !msgs.is_empty() {
+            messages = msgs
+                .into_iter()
+                .map(|m| serde_json::json!({ "role": m.role, "content": m.content }))
+                .collect();
+            found = true;
+        }
+    }
+
+    // 2. Try JSONL store if not found or if checking for raw key
+    if !found {
+        if let Some(ref store) = state.session_store {
+            let msgs = store.load(&id);
+            if !msgs.is_empty() {
+                messages = msgs
+                    .into_iter()
+                    .map(|m| serde_json::json!({ "role": m.role, "content": m.content }))
+                    .collect();
+                found = true;
+            }
+        }
+    }
+
+    if !found {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({"error": "Session not found"})),
+        )
+            .into_response();
+    }
 
     Json(serde_json::json!({
         "session_id": id,
@@ -1393,27 +1432,33 @@ pub async fn handle_api_session_delete(
         return e.into_response();
     }
 
-    let Some(ref backend) = state.session_backend else {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"error": "Session persistence is disabled"})),
-        )
-            .into_response();
-    };
+    let mut deleted = false;
 
-    let session_key = format!("gw_{id}");
-    match backend.delete_session(&session_key) {
-        Ok(true) => Json(serde_json::json!({"deleted": true, "session_id": id})).into_response(),
-        Ok(false) => (
+    // 1. Try SQLite backend first (with prefix)
+    if let Some(ref backend) = state.session_backend {
+        let session_key = format!("gw_{id}");
+        if let Ok(true) = backend.delete_session(&session_key) {
+            deleted = true;
+        }
+    }
+
+    // 2. Try JSONL store as fallback
+    if !deleted {
+        if let Some(ref store) = state.session_store {
+            if let Ok(true) = store.delete_session(&id) {
+                deleted = true;
+            }
+        }
+    }
+
+    if deleted {
+        Json(serde_json::json!({"deleted": true, "session_id": id})).into_response()
+    } else {
+        (
             StatusCode::NOT_FOUND,
             Json(serde_json::json!({"error": "Session not found"})),
         )
-            .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": format!("Failed to delete session: {e}")})),
-        )
-            .into_response(),
+            .into_response()
     }
 }
 
@@ -1511,40 +1556,47 @@ pub async fn handle_api_session_state(
         return e.into_response();
     }
 
-    let Some(ref backend) = state.session_backend else {
-        return (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"error": "Session persistence is disabled"})),
-        )
-            .into_response();
-    };
+    let mut session_state = None;
 
-    let session_key = format!("gw_{id}");
-    match backend.get_session_state(&session_key) {
-        Ok(Some(ss)) => {
-            let mut resp = serde_json::json!({
-                "session_id": id,
-                "state": ss.state,
-            });
-            if let Some(turn_id) = ss.turn_id {
-                resp["turn_id"] = serde_json::Value::String(turn_id);
-            }
-            if let Some(started) = ss.turn_started_at {
-                resp["turn_started_at"] = serde_json::Value::String(started.to_rfc3339());
-            }
-            Json(resp).into_response()
+    // 1. Try SQLite backend first
+    if let Some(ref backend) = state.session_backend {
+        let session_key = format!("gw_{id}");
+        if let Ok(Some(ss)) = backend.get_session_state(&session_key) {
+            session_state = Some(ss);
         }
-        Ok(None) => (
-            StatusCode::NOT_FOUND,
-            Json(serde_json::json!({"error": "Session not found"})),
-        )
-            .into_response(),
-        Err(e) => (
-            StatusCode::INTERNAL_SERVER_ERROR,
-            Json(serde_json::json!({"error": format!("Failed to get session state: {e}")})),
-        )
-            .into_response(),
     }
+
+    if let Some(ss) = session_state {
+        let mut resp = serde_json::json!({
+            "session_id": id,
+            "state": ss.state,
+        });
+        if let Some(turn_id) = ss.turn_id {
+            resp["turn_id"] = serde_json::Value::String(turn_id);
+        }
+        if let Some(started) = ss.turn_started_at {
+            resp["turn_started_at"] = serde_json::Value::String(started.to_rfc3339());
+        }
+        return Json(resp).into_response();
+    }
+
+    // 2. Try JSONL store: if file exists, it's "idle"
+    if let Some(ref store) = state.session_store {
+        let session_keys = store.list_sessions();
+        if session_keys.contains(&id) {
+            return Json(serde_json::json!({
+                "session_id": id,
+                "state": "idle",
+            }))
+            .into_response();
+        }
+    }
+
+    (
+        StatusCode::NOT_FOUND,
+        Json(serde_json::json!({"error": "Session not found"})),
+    )
+        .into_response()
 }
 
 // ── Claude Code hook endpoint ────────────────────────────────────

@@ -445,6 +445,11 @@ pub struct Config {
     #[nested]
     pub image_gen: ImageGenConfig,
 
+    /// GitHub integration configuration (`[integrations.github]`).
+    #[serde(default, alias = "github")]
+    #[nested]
+    pub github: GitHubConfig,
+
     /// Plugin system configuration (`[plugins]`).
     #[serde(default)]
     #[nested]
@@ -1723,6 +1728,14 @@ impl Default for SkillCreationConfig {
             similarity_threshold: 0.85,
         }
     }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Configurable, Default)]
+#[prefix = "integrations.github"]
+pub struct GitHubConfig {
+    /// GitHub Personal Access Token (PAT).
+    #[secret]
+    pub token: Option<String>,
 }
 
 /// Skill self-improvement configuration (`[skills.auto_improve]` section).
@@ -8925,6 +8938,7 @@ impl Default for Config {
             node_transport: NodeTransportConfig::default(),
             knowledge: KnowledgeConfig::default(),
             linkedin: LinkedInConfig::default(),
+            github: GitHubConfig::default(),
             image_gen: ImageGenConfig::default(),
             plugins: PluginsConfig::default(),
             locale: None,
@@ -11390,6 +11404,7 @@ auto_save = true
             node_transport: NodeTransportConfig::default(),
             knowledge: KnowledgeConfig::default(),
             linkedin: LinkedInConfig::default(),
+            github: GitHubConfig::default(),
             image_gen: ImageGenConfig::default(),
             plugins: PluginsConfig::default(),
             locale: None,
@@ -11920,6 +11935,7 @@ default_temperature = 0.7
             node_transport: NodeTransportConfig::default(),
             knowledge: KnowledgeConfig::default(),
             linkedin: LinkedInConfig::default(),
+            github: GitHubConfig::default(),
             image_gen: ImageGenConfig::default(),
             plugins: PluginsConfig::default(),
             locale: None,
@@ -16602,3 +16618,4 @@ allowed_users = ["@u:m"]
         );
     }
 }
+

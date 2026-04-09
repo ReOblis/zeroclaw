@@ -146,24 +146,35 @@ impl Observer for ChannelNotifyObserver {
     fn record_event(&self, event: &ObserverEvent) {
         if let ObserverEvent::ToolCallStart { tool, arguments } = event {
             self.tools_used.store(true, Ordering::Relaxed);
+            
+            // For chat channels, we want to be concise and avoid leaking raw JSON or technical parameters
             let detail = match arguments {
                 Some(args) if !args.is_empty() => {
                     if let Ok(v) = serde_json::from_str::<serde_json::Value>(args) {
                         if let Some(cmd) = v.get("command").and_then(|c| c.as_str()) {
-                            format!(": `{}`", truncate_with_ellipsis(cmd, 200))
+                            format!(": `{}`", truncate_with_ellipsis(cmd, 120))
                         } else if let Some(q) = v.get("query").and_then(|c| c.as_str()) {
-                            format!(": {}", truncate_with_ellipsis(q, 200))
+                            format!(": {}", truncate_with_ellipsis(q, 120))
                         } else if let Some(p) = v.get("path").and_then(|c| c.as_str()) {
-                            format!(": {p}")
+                            let path_str = p.to_string();
+                            format!(": {}", truncate_with_ellipsis(&path_str, 120))
                         } else if let Some(u) = v.get("url").and_then(|c| c.as_str()) {
                             format!(": {u}")
                         } else {
-                            let s = args.to_string();
-                            format!(": {}", truncate_with_ellipsis(&s, 120))
+                            // If it's a generic JSON block, just show the keys to give a hint without the raw values
+                            if let Some(obj) = v.as_object() {
+                                let keys: Vec<String> = obj.keys().cloned().collect();
+                                if keys.is_empty() {
+                                    String::new()
+                                } else {
+                                    format!(" ({})", keys.join(", "))
+                                }
+                            } else {
+                                String::new()
+                            }
                         }
                     } else {
-                        let s = args.to_string();
-                        format!(": {}", truncate_with_ellipsis(&s, 120))
+                        String::new()
                     }
                 }
                 _ => String::new(),
@@ -5226,6 +5237,7 @@ pub async fn doctor_channels(config: Config) -> Result<()> {
 pub async fn start_channels(
     config: Config,
     external_event_tx: Option<tokio::sync::broadcast::Sender<serde_json::Value>>,
+    external_session_store: Option<Arc<session_store::SessionStore>>,
 ) -> Result<()> {
     let provider_name = resolved_default_provider(&config);
     let provider_runtime_options = providers::provider_runtime_options_from_config(&config);
@@ -5709,7 +5721,9 @@ pub async fn start_channels(
         query_classification: config.query_classification.clone(),
         ack_reactions: config.channels_config.ack_reactions,
         show_tool_calls: config.channels_config.show_tool_calls,
-        session_store: if config.channels_config.session_persistence {
+        session_store: if let Some(store) = external_session_store {
+            Some(store)
+        } else if config.channels_config.session_persistence {
             match session_store::SessionStore::new(&config.workspace_dir) {
                 Ok(store) => {
                     tracing::info!("📂 Session persistence enabled");

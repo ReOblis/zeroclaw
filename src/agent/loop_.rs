@@ -3885,7 +3885,7 @@ pub async fn run(
             });
 
     // ── Execute ──────────────────────────────────────────────────
-    let start = Instant::now();
+    let _start = Instant::now();
 
     let mut final_output = String::new();
 

@@ -142,6 +142,40 @@ impl SessionStore {
             })
             .collect()
     }
+
+    /// List all sessions with filesystem-derived metadata.
+    pub fn list_sessions_with_metadata(&self) -> Vec<crate::channels::session_backend::SessionMetadata> {
+        let entries = match std::fs::read_dir(&self.sessions_dir) {
+            Ok(e) => e,
+            Err(_) => return Vec::new(),
+        };
+
+        entries
+            .filter_map(|entry| {
+                let entry = entry.ok()?;
+                let name = entry.file_name().into_string().ok()?;
+                let key = name.strip_suffix(".jsonl")?.to_string();
+                let meta = entry.metadata().ok()?;
+                let mtime = meta.modified().unwrap_or(std::time::SystemTime::UNIX_EPOCH);
+                // On some systems ctime is creation, on others it's change.
+                // We'll use mtime as a fallback for ctime if needed.
+                let ctime = meta.created().unwrap_or(mtime);
+
+                let message_count = std::fs::read_to_string(&entry.path())
+                    .ok()
+                    .map(|s| s.lines().count())
+                    .unwrap_or(0);
+
+                Some(crate::channels::session_backend::SessionMetadata {
+                    key,
+                    name: None,
+                    created_at: ctime.into(),
+                    last_activity: mtime.into(),
+                    message_count,
+                })
+            })
+            .collect()
+    }
 }
 
 impl SessionBackend for SessionStore {
@@ -159,6 +193,10 @@ impl SessionBackend for SessionStore {
 
     fn list_sessions(&self) -> Vec<String> {
         self.list_sessions()
+    }
+
+    fn list_sessions_with_metadata(&self) -> Vec<crate::channels::session_backend::SessionMetadata> {
+        self.list_sessions_with_metadata()
     }
 
     fn compact(&self, session_key: &str) -> std::io::Result<()> {

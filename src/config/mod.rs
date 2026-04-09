@@ -11,7 +11,7 @@ pub use schema::{
     CronScheduleDecl, DEFAULT_GWS_SERVICES, DataRetentionConfig, DeepgramSttConfig,
     DelegateAgentConfig, DelegateToolConfig, DiscordConfig, DockerRuntimeConfig, EdgeTtsConfig,
     ElevenLabsTtsConfig, EmbeddingRouteConfig, EstopConfig, FeishuConfig, GatewayConfig,
-    GeminiCliConfig, GoogleSttConfig, GoogleTtsConfig, GoogleWorkspaceAllowedOperation,
+    GeminiCliConfig, GitHubConfig, GoogleSttConfig, GoogleTtsConfig, GoogleWorkspaceAllowedOperation,
     GoogleWorkspaceConfig, HardwareConfig, HardwareTransport, HeartbeatConfig, HooksConfig,
     HttpRequestConfig, IMessageConfig, IdentityConfig, ImageGenConfig, ImageProviderDalleConfig,
     ImageProviderFluxConfig, ImageProviderImagenConfig, ImageProviderStabilityConfig, JiraConfig,

@@ -25,6 +25,7 @@ pub mod ws;
 use crate::channels::{
     Channel, GmailPushChannel, LinqChannel, NextcloudTalkChannel, SendMessage, WatiChannel,
     WhatsAppChannel, session_backend::SessionBackend, session_sqlite::SqliteSessionBackend,
+    session_store::SessionStore,
 };
 use crate::config::Config;
 use crate::cost::CostTracker;
@@ -364,6 +365,8 @@ pub struct AppState {
     pub path_prefix: String,
     /// Session backend for persisting gateway WS chat sessions
     pub session_backend: Option<Arc<dyn SessionBackend>>,
+    /// Session store for channel conversations (JSONL)
+    pub session_store: Option<Arc<SessionStore>>,
     /// Per-session actor queue for serializing concurrent turns
     pub session_queue: Arc<session_queue::SessionActorQueue>,
     /// Device registry for paired device management
@@ -384,6 +387,7 @@ pub async fn run_gateway(
     port: u16,
     config: Config,
     external_event_tx: Option<tokio::sync::broadcast::Sender<serde_json::Value>>,
+    session_store: Option<Arc<SessionStore>>,
 ) -> Result<()> {
     // ── Security: warn on public bind without tunnel or explicit opt-in ──
     if is_public_bind(host) && config.tunnel.provider == "none" && !config.gateway.allow_public_bind
@@ -851,6 +855,7 @@ pub async fn run_gateway(
         shutdown_tx,
         node_registry,
         session_backend,
+        session_store,
         session_queue: Arc::new(session_queue::SessionActorQueue::new(8, 30, 600)),
         device_registry,
         pending_pairings,

@@ -5,6 +5,7 @@ use std::future::Future;
 use std::path::PathBuf;
 use tokio::task::JoinHandle;
 use tokio::time::Duration;
+use std::sync::Arc;
 
 const STATUS_FLUSH_SECONDS: u64 = 5;
 
@@ -64,12 +65,26 @@ pub async fn run(config: Config, host: String, port: u16) -> Result<()> {
                 .await;
     }
 
+    // Initialize session store for channel persistence (shared with gateway for dashboard visibility)
+    let channel_session_store = if config.channels_config.session_persistence {
+        match crate::channels::session_store::SessionStore::new(&config.workspace_dir) {
+            Ok(store) => Some(Arc::new(store)),
+            Err(e) => {
+                tracing::warn!("Failed to initialize session store: {e}");
+                None
+            }
+        }
+    } else {
+        None
+    };
+
     let mut handles: Vec<JoinHandle<()>> = vec![spawn_state_writer(config.clone())];
 
     {
         let gateway_cfg = config.clone();
         let gateway_host = host.clone();
         let gateway_event_tx = event_tx.clone();
+        let gateway_session_store = channel_session_store.clone();
         handles.push(spawn_component_supervisor(
             "gateway",
             initial_backoff,
@@ -78,8 +93,9 @@ pub async fn run(config: Config, host: String, port: u16) -> Result<()> {
                 let cfg = gateway_cfg.clone();
                 let host = gateway_host.clone();
                 let tx = gateway_event_tx.clone();
+                let store = gateway_session_store.clone();
                 async move {
-                    Box::pin(crate::gateway::run_gateway(&host, port, cfg, Some(tx))).await
+                    Box::pin(crate::gateway::run_gateway(&host, port, cfg, Some(tx), store)).await
                 }
             },
         ));
@@ -89,6 +105,7 @@ pub async fn run(config: Config, host: String, port: u16) -> Result<()> {
         if has_supervised_channels(&config) {
             let channels_cfg = config.clone();
             let channels_event_tx = event_tx.clone();
+            let channels_session_store = channel_session_store.clone();
             handles.push(spawn_component_supervisor(
                 "channels",
                 initial_backoff,
@@ -96,7 +113,10 @@ pub async fn run(config: Config, host: String, port: u16) -> Result<()> {
                 move || {
                     let cfg = channels_cfg.clone();
                     let tx = channels_event_tx.clone();
-                    async move { Box::pin(crate::channels::start_channels(cfg, Some(tx))).await }
+                    let store = channels_session_store.clone();
+                    async move {
+                        Box::pin(crate::channels::start_channels(cfg, Some(tx), store)).await
+                    }
                 },
             ));
         } else {
