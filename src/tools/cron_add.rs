@@ -57,10 +57,9 @@ impl Tool for CronAddTool {
 
     fn description(&self) -> &str {
         "Create a scheduled cron job (shell or agent) with cron/at/every schedules. \
-         Use job_type='agent' with a prompt to run the AI agent on schedule. \
-         To deliver output to a channel (Discord, Telegram, Slack, Mattermost, Matrix, QQ), set \
-         delivery={\"mode\":\"announce\",\"channel\":\"discord\",\"to\":\"<channel_id_or_chat_id>\"}. \
-         This is the preferred tool for sending scheduled/delayed messages to users via channels."
+         IMPORTANT: Conversation history is not automatically attached during cron execution; you MUST include all necessary context (e.g., who and what to remind) in the 'prompt' field. \
+         DO NOT use interactive tools like 'ask_user' during cron tasks as there is no user to respond in the background. \
+         For one-time reminders (e.g., 'in 5 minutes'), ALWAYS use kind='at' with a specific UTC datetime."
     }
 
     fn parameters_schema(&self) -> serde_json::Value {
@@ -119,7 +118,7 @@ impl Tool for CronAddTool {
                 },
                 "prompt": {
                     "type": "string",
-                    "description": "Agent prompt to run on schedule (required when job_type is 'agent')"
+                    "description": "Agent prompt to run on schedule (required when job_type is 'agent'). Must be self-contained and descriptive (e.g., 'Remind Vượng to drink water' instead of just 'Remind')."
                 },
                 "session_target": {
                     "type": "string",

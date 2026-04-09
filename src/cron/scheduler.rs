@@ -293,12 +293,6 @@ async fn run_agent_job(
             Ok(entries) if !entries.is_empty() => {
                 let ctx: String = entries
                     .iter()
-                    .filter(|e| {
-                        !matches!(
-                            e.category,
-                            crate::memory::traits::MemoryCategory::Conversation
-                        )
-                    })
                     .map(|e| format!("- {}: {}", e.key, e.content))
                     .collect::<Vec<_>>()
                     .join("\n");
@@ -313,7 +307,13 @@ async fn run_agent_job(
         Err(_) => String::new(),
     };
 
-    let prefixed_prompt = format!("{memory_context}[cron:{} {name}] {prompt}", job.id);
+    let prefixed_prompt = format!(
+        "{memory_context}[BACKGROUND TASK - CRON: {} {}] \
+         IMPORTANT: You are running as a background scheduled task. Deliver the response directly to the user. \
+         DO NOT ask questions or use interactive tools like 'ask_user'. Just say the reminder content. \
+         Task instructions: {}",
+        job.id, name, prompt
+    );
     let model_override = job.model.clone();
 
     let run_result = match job.session_target {
