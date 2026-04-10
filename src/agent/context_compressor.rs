@@ -396,7 +396,14 @@ impl ContextCompressor {
         end = align_boundary_backward(history, end);
 
         if start >= end {
-            return Ok(false);
+            // Emergency fallback: if boundaries are blocked by tool results, 
+            // force-trim the middle regardless of boundaries if tokens are very high.
+            if estimate_tokens(history) > self.context_window {
+                start = self.config.protect_first_n.min(n);
+                end = n.saturating_sub(self.config.protect_last_n);
+            } else {
+                return Ok(false);
+            }
         }
 
         // Build transcript from the middle section
@@ -418,7 +425,8 @@ impl ContextCompressor {
 
         let user_prompt = format!(
             "Summarize the following conversation history ({message_count} messages) for context preservation. \
-             Keep it concise (max 20 bullet points).{identifier_note}\n\n{transcript}"
+             You MUST be extremely concise. Keep only the most important facts, decisions, and technical details. \
+             Ensure the summary is significantly smaller than the input (aim for 10% of size).{identifier_note}\n\n{transcript}"
         );
 
         // LLM summarization with safety timeout

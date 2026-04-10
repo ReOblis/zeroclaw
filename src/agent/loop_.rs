@@ -736,22 +736,34 @@ fn parse_minimax_invoke_calls(response: &str) -> Option<(String, Vec<ParsedToolC
     Some((text, calls))
 }
 
-const TOOL_CALL_OPEN_TAGS: [&str; 6] = [
+const TOOL_CALL_OPEN_TAGS: [&str; 15] = [
     "<tool_call>",
     "<toolcall>",
     "<tool-call>",
     "<invoke>",
     "<minimax:tool_call>",
     "<minimax:toolcall>",
+    "<function_calls>",
+    "<function_call>",
+    "<tool>",
+    "```tool_call",
+    "```toolcall",
+    "```tool-call",
+    "```tool",
+    "```json\n<tool_call>",
+    "```xml\n<tool_call>",
 ];
 
-const TOOL_CALL_CLOSE_TAGS: [&str; 6] = [
+const TOOL_CALL_CLOSE_TAGS: [&str; 9] = [
     "</tool_call>",
     "</toolcall>",
     "</tool-call>",
     "</invoke>",
     "</minimax:tool_call>",
     "</minimax:toolcall>",
+    "</function_calls>",
+    "</function_call>",
+    "</tool>",
 ];
 
 fn find_first_tag<'a>(haystack: &str, tags: &'a [&'a str]) -> Option<(usize, &'a str)> {
@@ -1420,12 +1432,22 @@ fn parse_tool_calls(response: &str) -> (String, Vec<ParsedToolCall>) {
             "<invoke>" => Some("</invoke>"),
             "<minimax:tool_call>" => Some("</minimax:tool_call>"),
             "<minimax:toolcall>" => Some("</minimax:toolcall>"),
+            "<function_calls>" => Some("</function_calls>"),
+            "<function_call>" => Some("</function_call>"),
+            "<tool>" => Some("</tool>"),
+            t if t.starts_with("```") => Some("```"),
             _ => None,
         }) else {
             break;
         };
 
         let after_open = &remaining[start + open_tag.len()..];
+        // Special case: handle case where tag is hallucinated like ```tool_call> (with a trailing bracket)
+        let after_open = if open_tag.starts_with("```") && after_open.starts_with('>') {
+            &after_open[1..]
+        } else {
+            after_open
+        };
         if let Some(close_idx) = after_open.find(close_tag) {
             let inner = &after_open[..close_idx];
             let mut parsed_any = false;
@@ -9639,5 +9661,27 @@ Let me check the result."#;
         .expect("should succeed without cost scope");
 
         assert_eq!(result, "ok");
+    }
+
+    #[test]
+    fn test_parse_tool_calls_markdown() {
+        use super::parse_tool_calls;
+        let input = "Text before.\n```tool_call\n{\"name\": \"shell\", \"arguments\": {\"command\": \"ls\"}}\n```\nText after.";
+        let (text, calls) = parse_tool_calls(input);
+        
+        assert_eq!(text.trim(), "Text before.\nText after.");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "shell");
+    }
+
+    #[test]
+    fn test_parse_tool_calls_with_trailing_bracket() {
+        use super::parse_tool_calls;
+        let input = "Analysis: ```tool_call>\n{\"name\": \"memory_recall\", \"arguments\": {\"query\": \"test\"}}\n```";
+        let (text, calls) = parse_tool_calls(input);
+        
+        assert_eq!(text.trim(), "Analysis:");
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0].name, "memory_recall");
     }
 }

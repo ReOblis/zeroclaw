@@ -17,9 +17,13 @@ use std::time::Duration;
 pub struct WebSearchTool {
     /// Provider selector as configured by user. Routed via provider aliases at runtime.
     provider: String,
-    /// Boot-time key snapshot (may be `None` if not yet configured at startup).
+    /// Boot-time key snapshot for Brave.
     boot_brave_api_key: Option<String>,
-    /// SearXNG instance base URL (e.g. "https://searx.example.com").
+    /// Boot-time key for Tavily.
+    boot_tavily_api_key: Option<String>,
+    /// Boot-time key for SerpAPI.
+    boot_serpapi_api_key: Option<String>,
+    /// SearXNG instance URL (e.g. "https://searx.example.com").
     searxng_instance_url: Option<String>,
     max_results: usize,
     timeout_secs: u64,
@@ -33,12 +37,16 @@ impl WebSearchTool {
     pub fn new(
         provider: String,
         brave_api_key: Option<String>,
+        tavily_api_key: Option<String>,
+        serpapi_api_key: Option<String>,
         max_results: usize,
         timeout_secs: u64,
     ) -> Self {
         Self {
             provider: provider.trim().to_lowercase(),
             boot_brave_api_key: brave_api_key,
+            boot_tavily_api_key: tavily_api_key,
+            boot_serpapi_api_key: serpapi_api_key,
             searxng_instance_url: None,
             max_results: max_results.clamp(1, 10),
             timeout_secs: timeout_secs.max(1),
@@ -55,6 +63,8 @@ impl WebSearchTool {
     pub fn new_with_config(
         provider: String,
         brave_api_key: Option<String>,
+        tavily_api_key: Option<String>,
+        serpapi_api_key: Option<String>,
         searxng_instance_url: Option<String>,
         max_results: usize,
         timeout_secs: u64,
@@ -64,6 +74,8 @@ impl WebSearchTool {
         Self {
             provider: provider.trim().to_lowercase(),
             boot_brave_api_key: brave_api_key,
+            boot_tavily_api_key: tavily_api_key,
+            boot_serpapi_api_key: serpapi_api_key,
             searxng_instance_url,
             max_results: max_results.clamp(1, 10),
             timeout_secs: timeout_secs.max(1),
@@ -121,6 +133,54 @@ impl WebSearchTool {
         } else {
             Ok(raw_key)
         }
+    }
+
+    /// Resolve the Tavily API key from boot-time or fresh config.
+    fn resolve_tavily_api_key(&self) -> anyhow::Result<String> {
+        if let Some(ref key) = self.boot_tavily_api_key {
+            if !key.is_empty() && !crate::security::SecretStore::is_encrypted(key) {
+                return Ok(key.clone());
+            }
+        }
+        self.reload_tavily_api_key()
+    }
+
+    fn reload_tavily_api_key(&self) -> anyhow::Result<String> {
+        let contents = std::fs::read_to_string(&self.config_path).map_err(|e| {
+            anyhow::anyhow!("Failed to read config for Tavily API key: {e}")
+        })?;
+        let config: crate::config::Config = toml::from_str(&contents).map_err(|e| {
+            anyhow::anyhow!("Failed to parse config for Tavily API key: {e}")
+        })?;
+        let raw_key = config
+            .web_search
+            .tavily_api_key
+            .filter(|k| !k.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("Tavily API key not configured"))?;
+
+        if crate::security::SecretStore::is_encrypted(&raw_key) {
+            let zeroclaw_dir = self.config_path.parent().unwrap_or_else(|| Path::new("."));
+            let store = crate::security::SecretStore::new(zeroclaw_dir, self.secrets_encrypt);
+            let plaintext = store.decrypt(&raw_key)?;
+            Ok(plaintext)
+        } else {
+            Ok(raw_key)
+        }
+    }
+
+    /// Resolve the SerpAPI API key.
+    fn resolve_serpapi_api_key(&self) -> anyhow::Result<String> {
+        let contents = std::fs::read_to_string(&self.config_path).map_err(|e| {
+            anyhow::anyhow!("Failed to read config for SerpAPI key: {e}")
+        })?;
+        let config: crate::config::Config = toml::from_str(&contents).map_err(|e| {
+            anyhow::anyhow!("Failed to parse config for SerpAPI key: {e}")
+        })?;
+        config
+            .web_search
+            .serpapi_api_key
+            .filter(|k| !k.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("SerpAPI key not configured"))
     }
 
     async fn search_duckduckgo(&self, query: &str) -> anyhow::Result<String> {
@@ -355,6 +415,71 @@ impl WebSearchTool {
 
         Ok(lines.join("\n"))
     }
+
+    async fn search_tavily(&self, query: &str) -> anyhow::Result<String> {
+        let api_key = self.resolve_tavily_api_key()?;
+        let search_url = "https://api.tavily.com/search";
+
+        let builder = reqwest::Client::builder().timeout(Duration::from_secs(self.timeout_secs));
+        let builder = crate::config::apply_runtime_proxy_to_builder(builder, "tool.web_search");
+        let client = builder.build()?;
+
+        let body = json!({
+            "api_key": api_key,
+            "query": query,
+            "max_results": self.max_results,
+        });
+
+        let response = client.post(search_url).json(&body).send().await?;
+        if !response.status().is_success() {
+            anyhow::bail!("Tavily search failed: {}", response.status());
+        }
+
+        let json: serde_json::Value = response.json().await?;
+        let results = json.get("results").and_then(|r| r.as_array()).ok_or_else(|| anyhow::anyhow!("Invalid Tavily response"))?;
+        
+        let mut lines = vec![format!("Search results for: {} (via Tavily)", query)];
+        for (i, r) in results.iter().take(self.max_results).enumerate() {
+            let title = r.get("title").and_then(|v| v.as_str()).unwrap_or("No title");
+            let url = r.get("url").and_then(|v| v.as_str()).unwrap_or("");
+            let content = r.get("content").and_then(|v| v.as_str()).unwrap_or("");
+            lines.push(format!("{}. {}", i + 1, title));
+            lines.push(format!("   {}", url));
+            lines.push(format!("   {}", content));
+        }
+        Ok(lines.join("\n"))
+    }
+
+    async fn search_serpapi(&self, query: &str) -> anyhow::Result<String> {
+        let api_key = self.resolve_serpapi_api_key()?;
+        let search_url = "https://serpapi.com/search";
+
+        let builder = reqwest::Client::builder().timeout(Duration::from_secs(self.timeout_secs));
+        let builder = crate::config::apply_runtime_proxy_to_builder(builder, "tool.web_search");
+        let client = builder.build()?;
+
+        let response = client.get(search_url)
+            .query(&[("q", query), ("api_key", &api_key), ("engine", "google")])
+            .send().await?;
+
+        if !response.status().is_success() {
+            anyhow::bail!("SerpAPI search failed: {}", response.status());
+        }
+
+        let json: serde_json::Value = response.json().await?;
+        let results = json.get("organic_results").and_then(|r| r.as_array()).ok_or_else(|| anyhow::anyhow!("Invalid SerpAPI response"))?;
+
+        let mut lines = vec![format!("Search results for: {} (via SerpAPI/Google)", query)];
+        for (i, r) in results.iter().take(self.max_results).enumerate() {
+            let title = r.get("title").and_then(|v| v.as_str()).unwrap_or("No title");
+            let url = r.get("link").and_then(|v| v.as_str()).unwrap_or("");
+            let snippet = r.get("snippet").and_then(|v| v.as_str()).unwrap_or("");
+            lines.push(format!("{}. {}", i + 1, title));
+            lines.push(format!("   {}", url));
+            lines.push(format!("   {}", snippet));
+        }
+        Ok(lines.join("\n"))
+    }
 }
 
 fn decode_ddg_redirect_url(raw_url: &str) -> String {
@@ -419,11 +544,18 @@ impl Tool for WebSearchTool {
         }
 
         let result = match resolution.route {
-            WebSearchProviderRoute::DuckDuckGo | WebSearchProviderRoute::Tavily => {
-                self.search_duckduckgo(query).await?
-            } // TODO: implement Tavily search
+            WebSearchProviderRoute::Tavily => self.search_tavily(query).await?,
             WebSearchProviderRoute::Brave => self.search_brave(query).await?,
             WebSearchProviderRoute::SearXNG => self.search_searxng(query).await?,
+            WebSearchProviderRoute::DuckDuckGo => self.search_duckduckgo(query).await?,
+        };
+
+        // If provider is explicitly serpapi in config but route is DDG (fallback),
+        // we should try serpapi if configured.
+        let result = if self.provider == "serpapi" {
+            self.search_serpapi(query).await?
+        } else {
+            result
         };
 
         Ok(ToolResult {
@@ -440,19 +572,19 @@ mod tests {
 
     #[test]
     fn test_tool_name() {
-        let tool = WebSearchTool::new("duckduckgo".to_string(), None, 5, 15);
+        let tool = WebSearchTool::new("duckduckgo".to_string(), None, None, None, 5, 15);
         assert_eq!(tool.name(), "web_search_tool");
     }
 
     #[test]
     fn test_tool_description() {
-        let tool = WebSearchTool::new("duckduckgo".to_string(), None, 5, 15);
+        let tool = WebSearchTool::new("duckduckgo".to_string(), None, None, None, 5, 15);
         assert!(tool.description().contains("Search the web"));
     }
 
     #[test]
     fn test_parameters_schema() {
-        let tool = WebSearchTool::new("duckduckgo".to_string(), None, 5, 15);
+        let tool = WebSearchTool::new("duckduckgo".to_string(), None, None, None, 5, 15);
         let schema = tool.parameters_schema();
         assert_eq!(schema["type"], "object");
         assert!(schema["properties"]["query"].is_object());
@@ -466,7 +598,7 @@ mod tests {
 
     #[test]
     fn test_parse_duckduckgo_results_empty() {
-        let tool = WebSearchTool::new("duckduckgo".to_string(), None, 5, 15);
+        let tool = WebSearchTool::new("duckduckgo".to_string(), None, None, None, 5, 15);
         let result = tool
             .parse_duckduckgo_results("<html>No results here</html>", "test")
             .unwrap();
@@ -475,7 +607,7 @@ mod tests {
 
     #[test]
     fn test_parse_duckduckgo_results_with_data() {
-        let tool = WebSearchTool::new("duckduckgo".to_string(), None, 5, 15);
+        let tool = WebSearchTool::new("duckduckgo".to_string(), None, None, None, 5, 15);
         let html = r#"
             <a class="result__a" href="https://example.com">Example Title</a>
             <a class="result__snippet">This is a description</a>
@@ -487,7 +619,7 @@ mod tests {
 
     #[test]
     fn test_parse_duckduckgo_results_decodes_redirect_url() {
-        let tool = WebSearchTool::new("duckduckgo".to_string(), None, 5, 15);
+        let tool = WebSearchTool::new("duckduckgo".to_string(), None, None, None, 5, 15);
         let html = r#"
             <a class="result__a" href="https://duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fpath%3Fa%3D1&amp;rut=test">Example Title</a>
             <a class="result__snippet">This is a description</a>
@@ -499,7 +631,7 @@ mod tests {
 
     #[test]
     fn test_constructor_clamps_web_search_limits() {
-        let tool = WebSearchTool::new("duckduckgo".to_string(), None, 0, 0);
+        let tool = WebSearchTool::new("duckduckgo".to_string(), None, None, None, 5, 15);
         let html = r#"
             <a class="result__a" href="https://example.com">Example Title</a>
             <a class="result__snippet">This is a description</a>
@@ -510,21 +642,21 @@ mod tests {
 
     #[tokio::test]
     async fn test_execute_missing_query() {
-        let tool = WebSearchTool::new("duckduckgo".to_string(), None, 5, 15);
+        let tool = WebSearchTool::new("duckduckgo".to_string(), None, None, None, 5, 15);
         let result = tool.execute(json!({})).await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn test_execute_empty_query() {
-        let tool = WebSearchTool::new("duckduckgo".to_string(), None, 5, 15);
+        let tool = WebSearchTool::new("duckduckgo".to_string(), None, None, None, 5, 15);
         let result = tool.execute(json!({"query": ""})).await;
         assert!(result.is_err());
     }
 
     #[tokio::test]
     async fn test_execute_brave_without_api_key() {
-        let tool = WebSearchTool::new("brave".to_string(), None, 5, 15);
+        let tool = WebSearchTool::new("brave".to_string(), None, None, None, 5, 15);
         let result = tool.execute(json!({"query": "test"})).await;
         assert!(result.is_err());
         assert!(result.unwrap_err().to_string().contains("API key"));
@@ -535,6 +667,8 @@ mod tests {
         let tool = WebSearchTool::new(
             "brave".to_string(),
             Some("sk-plaintext-key".to_string()),
+            None,
+            None,
             5,
             15,
         );
@@ -555,6 +689,8 @@ mod tests {
         // No boot key -- forces reload from config
         let tool = WebSearchTool::new_with_config(
             "brave".to_string(),
+            None,
+            None,
             None,
             None,
             5,
@@ -584,6 +720,8 @@ mod tests {
             "brave".to_string(),
             Some(encrypted),
             None,
+            None,
+            None,
             5,
             15,
             config_path,
@@ -603,6 +741,8 @@ mod tests {
             "searxng".to_string(),
             None,
             None,
+            None,
+            None,
             5,
             15,
             config_path,
@@ -620,7 +760,7 @@ mod tests {
 
     #[test]
     fn test_parse_searxng_results_empty() {
-        let tool = WebSearchTool::new("searxng".to_string(), None, 5, 15);
+        let tool = WebSearchTool::new("searxng".to_string(), None, None, None, 5, 15);
         let json = serde_json::json!({"results": []});
         let result = tool.parse_searxng_results(&json, "test").unwrap();
         assert!(result.contains("No results found"));
@@ -628,7 +768,7 @@ mod tests {
 
     #[test]
     fn test_parse_searxng_results_with_data() {
-        let tool = WebSearchTool::new("searxng".to_string(), None, 5, 15);
+        let tool = WebSearchTool::new("searxng".to_string(), None, None, None, 5, 15);
         let json = serde_json::json!({
             "results": [
                 {
@@ -652,7 +792,7 @@ mod tests {
 
     #[test]
     fn test_parse_searxng_results_invalid_response() {
-        let tool = WebSearchTool::new("searxng".to_string(), None, 5, 15);
+        let tool = WebSearchTool::new("searxng".to_string(), None, None, None, 5, 15);
         let json = serde_json::json!({"error": "bad request"});
         let result = tool.parse_searxng_results(&json, "test");
         assert!(result.is_err());
@@ -669,6 +809,8 @@ mod tests {
         let tool = WebSearchTool {
             provider: "searxng".to_string(),
             boot_brave_api_key: None,
+            boot_tavily_api_key: None,
+            boot_serpapi_api_key: None,
             searxng_instance_url: Some("https://searx.example.com".to_string()),
             max_results: 5,
             timeout_secs: 15,
@@ -693,6 +835,8 @@ mod tests {
             "searxng".to_string(),
             None,
             None,
+            None,
+            None,
             5,
             15,
             config_path,
@@ -712,6 +856,8 @@ mod tests {
 
         let tool = WebSearchTool::new_with_config(
             "brave".to_string(),
+            None,
+            None,
             None,
             None,
             5,

@@ -1740,6 +1740,7 @@ mod tests {
             shutdown_tx: tokio::sync::watch::channel(false).0,
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
             session_backend: None,
+            session_store: None,
             session_queue: Arc::new(crate::gateway::session_queue::SessionActorQueue::new(
                 8, 30, 600,
             )),

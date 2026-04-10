@@ -2349,6 +2349,7 @@ mod tests {
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
             path_prefix: String::new(),
             session_backend: None,
+            session_store: None,
             session_queue: std::sync::Arc::new(
                 crate::gateway::session_queue::SessionActorQueue::new(8, 30, 600),
             ),
@@ -2420,6 +2421,7 @@ mod tests {
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
             path_prefix: String::new(),
             session_backend: None,
+            session_store: None,
             session_queue: std::sync::Arc::new(
                 crate::gateway::session_queue::SessionActorQueue::new(8, 30, 600),
             ),
@@ -2815,6 +2817,7 @@ mod tests {
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
             path_prefix: String::new(),
             session_backend: None,
+            session_store: None,
             session_queue: std::sync::Arc::new(
                 crate::gateway::session_queue::SessionActorQueue::new(8, 30, 600),
             ),
@@ -2894,6 +2897,7 @@ mod tests {
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
             path_prefix: String::new(),
             session_backend: None,
+            session_store: None,
             session_queue: std::sync::Arc::new(
                 crate::gateway::session_queue::SessionActorQueue::new(8, 30, 600),
             ),
@@ -2985,6 +2989,7 @@ mod tests {
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
             path_prefix: String::new(),
             session_backend: None,
+            session_store: None,
             session_queue: std::sync::Arc::new(
                 crate::gateway::session_queue::SessionActorQueue::new(8, 30, 600),
             ),
@@ -3048,6 +3053,7 @@ mod tests {
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
             path_prefix: String::new(),
             session_backend: None,
+            session_store: None,
             session_queue: std::sync::Arc::new(
                 crate::gateway::session_queue::SessionActorQueue::new(8, 30, 600),
             ),
@@ -3116,6 +3122,7 @@ mod tests {
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
             path_prefix: String::new(),
             session_backend: None,
+            session_store: None,
             session_queue: std::sync::Arc::new(
                 crate::gateway::session_queue::SessionActorQueue::new(8, 30, 600),
             ),
@@ -3189,6 +3196,7 @@ mod tests {
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
             path_prefix: String::new(),
             session_backend: None,
+            session_store: None,
             session_queue: std::sync::Arc::new(
                 crate::gateway::session_queue::SessionActorQueue::new(8, 30, 600),
             ),
@@ -3259,6 +3267,7 @@ mod tests {
             node_registry: Arc::new(nodes::NodeRegistry::new(16)),
             path_prefix: String::new(),
             session_backend: None,
+            session_store: None,
             session_queue: std::sync::Arc::new(
                 crate::gateway::session_queue::SessionActorQueue::new(8, 30, 600),
             ),

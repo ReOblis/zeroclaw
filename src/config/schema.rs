@@ -2663,6 +2663,10 @@ pub struct BrowserConfig {
     /// Optional Chrome/Chromium executable path for rust-native backend
     #[serde(default)]
     pub native_chrome_path: Option<String>,
+    /// Optional Browserless API key (for remote browser automation)
+    #[serde(default)]
+    #[secret]
+    pub browserless_api_key: Option<String>,
     /// Computer-use sidecar configuration
     #[serde(default)]
     #[nested]
@@ -2691,6 +2695,7 @@ impl Default for BrowserConfig {
             native_headless: default_true(),
             native_webdriver_url: default_browser_webdriver_url(),
             native_chrome_path: None,
+            browserless_api_key: None,
             computer_use: BrowserComputerUseConfig::default(),
         }
     }
@@ -2978,6 +2983,14 @@ pub struct WebSearchConfig {
     /// SearXNG instance URL (required if provider is "searxng"), e.g. "https://searx.example.com"
     #[serde(default)]
     pub searxng_instance_url: Option<String>,
+    /// Tavily Search API key (required if provider is "tavily")
+    #[serde(default)]
+    #[secret]
+    pub tavily_api_key: Option<String>,
+    /// SerpAPI API key (required if provider is "serpapi")
+    #[serde(default)]
+    #[secret]
+    pub serpapi_api_key: Option<String>,
     /// Maximum results per search (1-10)
     #[serde(default = "default_web_search_max_results")]
     pub max_results: usize,
@@ -3004,6 +3017,8 @@ impl Default for WebSearchConfig {
             enabled: true,
             provider: default_web_search_provider(),
             brave_api_key: None,
+            tavily_api_key: None,
+            serpapi_api_key: None,
             searxng_instance_url: None,
             max_results: default_web_search_max_results(),
             timeout_secs: default_web_search_timeout_secs(),
@@ -10456,6 +10471,26 @@ impl Config {
             }
         }
 
+        // Tavily API key: ZEROCLAW_TAVILY_API_KEY or TAVILY_API_KEY
+        if let Ok(api_key) =
+            std::env::var("ZEROCLAW_TAVILY_API_KEY").or_else(|_| std::env::var("TAVILY_API_KEY"))
+        {
+            let api_key = api_key.trim();
+            if !api_key.is_empty() {
+                self.web_search.tavily_api_key = Some(api_key.to_string());
+            }
+        }
+
+        // SerpAPI API key: ZEROCLAW_SERPAPI_API_KEY or SERPAPI_API_KEY
+        if let Ok(api_key) =
+            std::env::var("ZEROCLAW_SERPAPI_API_KEY").or_else(|_| std::env::var("SERPAPI_API_KEY"))
+        {
+            let api_key = api_key.trim();
+            if !api_key.is_empty() {
+                self.web_search.serpapi_api_key = Some(api_key.to_string());
+            }
+        }
+
         // Web search max results: ZEROCLAW_WEB_SEARCH_MAX_RESULTS or WEB_SEARCH_MAX_RESULTS
         if let Ok(max_results) = std::env::var("ZEROCLAW_WEB_SEARCH_MAX_RESULTS")
             .or_else(|_| std::env::var("WEB_SEARCH_MAX_RESULTS"))
@@ -10475,6 +10510,39 @@ impl Config {
                 if timeout_secs > 0 {
                     self.web_search.timeout_secs = timeout_secs;
                 }
+            }
+        }
+
+        // Browser session name: ZEROCLAW_BROWSER_SESSION_NAME
+        if let Ok(session) = std::env::var("ZEROCLAW_BROWSER_SESSION_NAME") {
+            if !session.is_empty() {
+                self.browser.session_name = Some(session);
+            }
+        }
+
+        // Browser backend: ZEROCLAW_BROWSER_BACKEND
+        if let Ok(backend) = std::env::var("ZEROCLAW_BROWSER_BACKEND") {
+            if !backend.is_empty() {
+                self.browser.backend = backend;
+            }
+        }
+
+        // WebDriver URL: ZEROCLAW_BROWSER_WEBDRIVER_URL or WEBDRIVER_URL
+        if let Ok(url) = std::env::var("ZEROCLAW_BROWSER_WEBDRIVER_URL")
+            .or_else(|_| std::env::var("WEBDRIVER_URL"))
+        {
+            if !url.is_empty() {
+                self.browser.native_webdriver_url = url;
+            }
+        }
+
+        // Browserless API key: ZEROCLAW_BROWSERLESS_API_KEY or BROWSERLESS_API_KEY
+        if let Ok(api_key) = std::env::var("ZEROCLAW_BROWSERLESS_API_KEY")
+            .or_else(|_| std::env::var("BROWSERLESS_API_KEY"))
+        {
+            let api_key = api_key.trim();
+            if !api_key.is_empty() {
+                self.browser.browserless_api_key = Some(api_key.to_string());
             }
         }
 
@@ -13074,6 +13142,7 @@ default_temperature = 0.7
             native_headless: false,
             native_webdriver_url: "http://localhost:4444".into(),
             native_chrome_path: Some("/usr/bin/chromium".into()),
+            browserless_api_key: None,
             computer_use: BrowserComputerUseConfig {
                 endpoint: "https://computer-use.example.com/v1/actions".into(),
                 api_key: Some("test-token".into()),

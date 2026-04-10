@@ -67,6 +67,7 @@ pub struct BrowserTool {
     native_webdriver_url: String,
     native_chrome_path: Option<String>,
     computer_use: ComputerUseConfig,
+    browserless_api_key: Option<String>,
     #[cfg(feature = "browser-native")]
     native_state: tokio::sync::Mutex<native_backend::NativeBrowserState>,
 }
@@ -211,6 +212,7 @@ impl BrowserTool {
             "http://127.0.0.1:9515".into(),
             None,
             ComputerUseConfig::default(),
+            None,
         )
     }
 
@@ -224,6 +226,7 @@ impl BrowserTool {
         native_webdriver_url: String,
         native_chrome_path: Option<String>,
         computer_use: ComputerUseConfig,
+        browserless_api_key: Option<String>,
     ) -> Self {
         Self {
             security,
@@ -234,6 +237,7 @@ impl BrowserTool {
             native_webdriver_url,
             native_chrome_path,
             computer_use,
+            browserless_api_key,
             #[cfg(feature = "browser-native")]
             native_state: tokio::sync::Mutex::new(native_backend::NativeBrowserState::default()),
         }
@@ -654,11 +658,19 @@ impl BrowserTool {
         {
             let mut state = self.native_state.lock().await;
 
+            let webdriver_url = if let Some(ref api_key) = self.browserless_api_key {
+                let mut url = self.native_webdriver_url.clone();
+                let separator = if url.contains('?') { "&" } else { "?" };
+                format!("{url}{separator}token={api_key}")
+            } else {
+                self.native_webdriver_url.clone()
+            };
+
             let first_attempt = state
                 .execute_action(
                     action.clone(),
                     self.native_headless,
-                    &self.native_webdriver_url,
+                    &webdriver_url,
                     self.native_chrome_path.as_deref(),
                 )
                 .await;
@@ -675,7 +687,7 @@ impl BrowserTool {
                         .execute_action(
                             action,
                             self.native_headless,
-                            &self.native_webdriver_url,
+                            &webdriver_url,
                             self.native_chrome_path.as_deref(),
                         )
                         .await

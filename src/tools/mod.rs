@@ -40,6 +40,7 @@ pub mod data_management;
 pub mod delegate;
 pub mod discord_search;
 pub mod escalate;
+pub mod finance;
 pub mod file_edit;
 pub mod file_read;
 pub mod file_write;
@@ -142,6 +143,7 @@ pub use delegate::DelegateTool;
 pub use delegate::{BackgroundDelegateResult, BackgroundTaskStatus};
 pub use discord_search::DiscordSearchTool;
 pub use escalate::EscalateToHumanTool;
+pub use finance::FinanceTool;
 pub use file_edit::FileEditTool;
 pub use file_read::FileReadTool;
 pub use file_write::FileWriteTool;
@@ -457,6 +459,7 @@ pub fn all_tools_with_runtime(
         )),
         Arc::new(CalculatorTool::new()),
         Arc::new(WeatherTool::new()),
+        Arc::new(FinanceTool::new()),
         Arc::new(CanvasTool::new(canvas_store.unwrap_or_default())),
     ];
 
@@ -529,6 +532,7 @@ pub fn all_tools_with_runtime(
                 max_coordinate_x: browser_config.computer_use.max_coordinate_x,
                 max_coordinate_y: browser_config.computer_use.max_coordinate_y,
             },
+            browser_config.browserless_api_key.clone(),
         )));
     }
 
@@ -582,6 +586,8 @@ pub fn all_tools_with_runtime(
         tool_arcs.push(Arc::new(WebSearchTool::new_with_config(
             root_config.web_search.provider.clone(),
             root_config.web_search.brave_api_key.clone(),
+            root_config.web_search.tavily_api_key.clone(),
+            root_config.web_search.serpapi_api_key.clone(),
             root_config.web_search.searxng_instance_url.clone(),
             root_config.web_search.max_results,
             root_config.web_search.timeout_secs,

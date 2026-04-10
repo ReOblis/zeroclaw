@@ -55,6 +55,7 @@ impl SystemPromptBuilder {
                 Box::new(WorkspaceSection),
                 Box::new(RuntimeSection),
                 Box::new(ChannelMediaSection),
+                Box::new(LanguagePolicySection),
             ],
         }
     }
@@ -79,6 +80,7 @@ impl SystemPromptBuilder {
 }
 
 pub struct IdentitySection;
+pub struct LanguagePolicySection;
 pub struct ToolHonestySection;
 pub struct ToolsSection;
 pub struct SafetySection;
@@ -123,6 +125,23 @@ impl PromptSection for IdentitySection {
     }
 }
 
+impl PromptSection for LanguagePolicySection {
+    fn name(&self) -> &str {
+        "language_policy"
+    }
+
+    fn build(&self, _ctx: &PromptContext<'_>) -> Result<String> {
+        Ok(
+            "## Language Policy\n\n\
+             - ALWAYS respond in the same language the user is using.\n\
+             - If the user's prompt is in Vietnamese, respond entirely in Vietnamese.\n\
+             - DO NOT switch to English just because tool results, web search data, or document contents are in English.\n\
+             - If you must translate something, do so accurately while maintaining your persona."
+                .into(),
+        )
+    }
+}
+
 impl PromptSection for ToolHonestySection {
     fn name(&self) -> &str {
         "tool_honesty"
@@ -132,8 +151,11 @@ impl PromptSection for ToolHonestySection {
         Ok(
             "## CRITICAL: Tool Honesty\n\n\
              - NEVER fabricate, invent, or guess tool results. If a tool returns empty results, say \"No results found.\"\n\
-             - If a tool call fails, report the error — never make up data to fill the gap.\n\
-             - When unsure whether a tool call succeeded, ask the user rather than guessing."
+             - NEVER respond with a hallucinated tool-call error JSON (e.g., \"This tool is not yet enabled\").\n\
+             - If you need information from a tool you don't have, use `web_search_tool` if available, or tell the user you don't have that specific capability.\n\
+             - If a tool call fails, report the actual error — never make up data to fill the gap.\n\
+             - When unsure whether a tool call succeeded, ask the user rather than guessing.\n\
+             - When presenting data (especially financial or comparative data), prefer Markdown tables if the user requests a structured format."
                 .into(),
         )
     }

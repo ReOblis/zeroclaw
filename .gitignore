@@ -68,3 +68,4 @@ rust_out
 
 # Auto-generated Tauri schemas
 apps/tauri/gen/schemas/linux-schema.json
+/target_test

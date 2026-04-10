@@ -501,7 +501,7 @@ fn is_stop_command(content: &str) -> bool {
 /// blocks that are internal protocol and must not be forwarded to end
 /// users on any channel.
 fn strip_tool_call_tags(message: &str) -> String {
-    const TOOL_CALL_OPEN_TAGS: [&str; 7] = [
+    const TOOL_CALL_OPEN_TAGS: [&str; 13] = [
         "<function_calls>",
         "<function_call>",
         "<tool_call>",
@@ -509,6 +509,12 @@ fn strip_tool_call_tags(message: &str) -> String {
         "<tool-call>",
         "<tool>",
         "<invoke>",
+        "```tool_call",
+        "```toolcall",
+        "```tool-call",
+        "```tool",
+        "```json\n<tool_call>",
+        "```xml\n<tool_call>",
     ];
 
     fn find_first_tag<'a>(haystack: &str, tags: &'a [&'a str]) -> Option<(usize, &'a str)> {
@@ -518,6 +524,9 @@ fn strip_tool_call_tags(message: &str) -> String {
     }
 
     fn matching_close_tag(open_tag: &str) -> Option<&'static str> {
+        if open_tag.starts_with("```") {
+            return Some("```");
+        }
         match open_tag {
             "<function_calls>" => Some("</function_calls>"),
             "<function_call>" => Some("</function_call>"),
@@ -556,14 +565,19 @@ fn strip_tool_call_tags(message: &str) -> String {
     fn strip_leading_close_tags(mut input: &str) -> &str {
         loop {
             let trimmed = input.trim_start();
-            if !trimmed.starts_with("</") {
+            if !trimmed.starts_with("</") && !trimmed.starts_with("```") {
                 return trimmed;
             }
 
-            let Some(close_end) = trimmed.find('>') else {
-                return "";
-            };
-            input = &trimmed[close_end + 1..];
+            if trimmed.starts_with("</") {
+                let Some(close_end) = trimmed.find('>') else {
+                    return "";
+                };
+                input = &trimmed[close_end + 1..];
+            } else {
+                // starts with ```
+                input = &trimmed[3..];
+            }
         }
     }
 
@@ -579,18 +593,28 @@ fn strip_tool_call_tags(message: &str) -> String {
         let Some(close_tag) = matching_close_tag(open_tag) else {
             break;
         };
+        // For ```tool_call style, the "open tag" might be just the start.
+        // We look for a closing tag after it.
         let after_open = &remaining[start + open_tag.len()..];
 
-        if let Some(close_idx) = after_open.find(close_tag) {
-            remaining = &after_open[close_idx + close_tag.len()..];
+        // Handle case where tag is hallucinated like ```tool_call> (with a trailing bracket)
+        let after_open_trimmed = if open_tag.starts_with("```") && after_open.starts_with('>') {
+            &after_open[1..]
+        } else {
+            after_open
+        };
+
+        if let Some(close_idx) = after_open_trimmed.find(close_tag) {
+            remaining = &after_open_trimmed[close_idx + close_tag.len()..];
             continue;
         }
 
-        if let Some(consumed_end) = extract_first_json_end(after_open) {
-            remaining = strip_leading_close_tags(&after_open[consumed_end..]);
+        if let Some(consumed_end) = extract_first_json_end(after_open_trimmed) {
+            remaining = strip_leading_close_tags(&after_open_trimmed[consumed_end..]);
             continue;
         }
 
+        // If no closing tag and no JSON found, treat rest as part of the tool call if it looks like one
         kept_segments.push(remaining[start..].to_string());
         remaining = "";
         break;
@@ -600,14 +624,28 @@ fn strip_tool_call_tags(message: &str) -> String {
         kept_segments.push(remaining.to_string());
     }
 
-    let mut result = kept_segments.concat();
-
-    // Clean up any resulting blank lines (but preserve paragraphs)
-    while result.contains("\n\n\n") {
-        result = result.replace("\n\n\n", "\n\n");
-    }
-
+    let result: String = kept_segments.concat();
     result.trim().to_string()
+}
+
+#[cfg(test)]
+mod test_stripping {
+    use super::*;
+
+    #[test]
+    fn test_strip_malformed_tags() {
+        let input = "Here is a call: ```tool_call\n{\"name\": \"test\"}\n``` And text after.";
+        let stripped = strip_tool_call_tags(input);
+        assert_eq!(stripped, "Here is a call:\n\nAnd text after.");
+
+        let input2 = "```tool_call>\n{\"name\": \"test\"}\n```";
+        let stripped2 = strip_tool_call_tags(input2);
+        assert_eq!(stripped2, "");
+
+        let input3 = "Standard <tool_call>{\"name\": \"test\"}</tool_call> remains hidden.";
+        let stripped3 = strip_tool_call_tags(input3);
+        assert_eq!(stripped3, "Standard remains hidden.");
+    }
 }
 
 fn channel_delivery_instructions(channel_name: &str) -> Option<&'static str> {
