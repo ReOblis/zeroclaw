@@ -21,10 +21,6 @@ const MAX_RECONNECT_DELAY = 30000;
 
 /**
  * SSE client that connects to the ZeroClaw event stream.
- *
- * Because the native EventSource API does not support custom headers, we use
- * the fetch API with a ReadableStream to consume the text/event-stream
- * response, allowing us to pass the Authorization bearer token.
  */
 export class SSEClient {
   private controller: AbortController | null = null;
@@ -35,17 +31,25 @@ export class SSEClient {
   public onEvent: SSEEventHandler | null = null;
   public onError: SSEErrorHandler | null = null;
   public onConnect: (() => void) | null = null;
+  public onDisconnect: (() => void) | null = null;
 
   private readonly path: string;
   private readonly reconnectDelay: number;
   private readonly maxReconnectDelay: number;
   private readonly autoReconnect: boolean;
 
-  constructor(options: SSEClientOptions = {}) {
-    this.path = options.path ?? `${apiOrigin}${basePath}/api/events`;
-    this.reconnectDelay = options.reconnectDelay ?? DEFAULT_RECONNECT_DELAY;
-    this.maxReconnectDelay = options.maxReconnectDelay ?? MAX_RECONNECT_DELAY;
-    this.autoReconnect = options.autoReconnect ?? true;
+  constructor(optionsOrPath: SSEClientOptions | string = {}) {
+    if (typeof optionsOrPath === 'string') {
+      this.path = optionsOrPath;
+      this.reconnectDelay = DEFAULT_RECONNECT_DELAY;
+      this.maxReconnectDelay = MAX_RECONNECT_DELAY;
+      this.autoReconnect = true;
+    } else {
+      this.path = optionsOrPath.path ?? `${apiOrigin}${basePath}/api/events`;
+      this.reconnectDelay = optionsOrPath.reconnectDelay ?? DEFAULT_RECONNECT_DELAY;
+      this.maxReconnectDelay = optionsOrPath.maxReconnectDelay ?? MAX_RECONNECT_DELAY;
+      this.autoReconnect = optionsOrPath.autoReconnect ?? true;
+    }
     this.currentDelay = this.reconnectDelay;
   }
 
@@ -84,6 +88,7 @@ export class SSEClient {
         if (err instanceof DOMException && err.name === 'AbortError') {
           return; // intentional disconnect
         }
+        this.onDisconnect?.();
         this.onError?.(err instanceof Error ? err : new Error(String(err)));
         this.scheduleReconnect();
       });
@@ -97,11 +102,8 @@ export class SSEClient {
       this.controller.abort();
       this.controller = null;
     }
+    this.onDisconnect?.();
   }
-
-  // ---------------------------------------------------------------------------
-  // Stream consumption
-  // ---------------------------------------------------------------------------
 
   private async consumeStream(body: ReadableStream<Uint8Array>): Promise<void> {
     const reader = body.getReader();
@@ -115,7 +117,6 @@ export class SSEClient {
 
         buffer += decoder.decode(value, { stream: true });
 
-        // SSE events are separated by double newlines
         const parts = buffer.split('\n\n');
         buffer = parts.pop() ?? '';
 
@@ -130,9 +131,9 @@ export class SSEClient {
       this.onError?.(err instanceof Error ? err : new Error(String(err)));
     } finally {
       reader.releaseLock();
+      this.onDisconnect?.();
     }
 
-    // Stream ended – schedule reconnect
     this.scheduleReconnect();
   }
 
@@ -146,7 +147,6 @@ export class SSEClient {
       } else if (line.startsWith('data:')) {
         dataLines.push(line.slice(5).trim());
       }
-      // Ignore comments (lines starting with ':') and other fields
     }
 
     if (dataLines.length === 0) return;
@@ -163,10 +163,6 @@ export class SSEClient {
 
     this.onEvent?.(parsed);
   }
-
-  // ---------------------------------------------------------------------------
-  // Reconnection logic
-  // ---------------------------------------------------------------------------
 
   private scheduleReconnect(): void {
     if (this.intentionallyClosed || !this.autoReconnect) return;

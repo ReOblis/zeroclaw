@@ -1,152 +1,115 @@
-import { useState, useEffect, useRef, useCallback } from 'react';
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import {
-  Activity,
   Pause,
   Play,
   ArrowDown,
-  Filter,
+  Terminal,
+  Cpu,
+  Bot,
+  Trash2,
 } from 'lucide-react';
-import type { SSEEvent } from '@/types/api';
 import { SSEClient } from '@/lib/sse';
-import { getToken } from '@/lib/auth';
 import { apiOrigin, basePath } from '@/lib/basePath';
-import { t } from '@/lib/i18n';
 
 function formatTimestamp(ts?: string): string {
   if (!ts) return new Date().toLocaleTimeString();
-  return new Date(ts).toLocaleTimeString();
+  const date = new Date(ts);
+  return date.toLocaleTimeString([], { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' }) + '.' + date.getMilliseconds().toString().padStart(3, '0');
 }
 
-function eventTypeStyle(type: string): { color: string; bg: string; border: string } {
-  switch (type.toLowerCase()) {
-    case 'error':
-      return { color: 'var(--color-status-error)', bg: 'rgba(239, 68, 68, 0.06)', border: 'rgba(239, 68, 68, 0.2)' };
-    case 'warn':
-    case 'warning':
-      return { color: 'var(--color-status-warning)', bg: 'rgba(255, 170, 0, 0.06)', border: 'rgba(255, 170, 0, 0.2)' };
-    case 'tool_call':
-    case 'tool_result':
-    case 'tool_call_start':
-      return { color: '#a78bfa', bg: 'rgba(167, 139, 250, 0.06)', border: 'rgba(167, 139, 250, 0.2)' };
-    case 'llm_request':
-      return { color: '#38bdf8', bg: 'rgba(56, 189, 248, 0.06)', border: 'rgba(56, 189, 248, 0.2)' };
-    case 'agent_start':
-    case 'agent_end':
-      return { color: '#34d399', bg: 'rgba(52, 211, 153, 0.06)', border: 'rgba(52, 211, 153, 0.2)' };
-    case 'message':
-    case 'chat':
-      return { color: 'var(--pc-accent)', bg: 'var(--pc-accent-glow)', border: 'var(--pc-accent-dim)' };
-    case 'health':
-    case 'status':
-      return { color: 'var(--color-status-success)', bg: 'rgba(0, 230, 138, 0.06)', border: 'rgba(0, 230, 138, 0.2)' };
-    default:
-      return { color: 'var(--pc-text-muted)', bg: 'var(--pc-hover)', border: 'var(--pc-border)' };
+function getLevelColor(level: string): string {
+  switch (level.toUpperCase()) {
+    case 'ERROR': return '#ff4d4d';
+    case 'WARN':
+    case 'WARNING': return '#ffaa00';
+    case 'INFO': return '#00e68a';
+    case 'DEBUG': return '#38bdf8';
+    case 'TRACE': return '#a78bfa';
+    default: return 'var(--pc-text-muted)';
   }
 }
 
-interface LogEntry { id: string; event: SSEEvent; }
-
-const LOG_STORAGE_KEY = 'zeroclaw_live_logs';
-const MAX_PERSISTED_LOGS = 200;
-
-function loadPersistedLogs(): LogEntry[] {
-  try {
-    const raw = sessionStorage.getItem(LOG_STORAGE_KEY);
-    if (!raw) return [];
-    return JSON.parse(raw) as LogEntry[];
-  } catch {
-    return [];
-  }
+interface LogEntry {
+  id: string;
+  timestamp: string;
+  level: string;
+  agent: string;
+  message: string;
+  target: string;
+  source: 'system' | 'agent';
 }
 
-function persistLogs(entries: LogEntry[]): void {
-  try {
-    sessionStorage.setItem(LOG_STORAGE_KEY, JSON.stringify(entries.slice(-MAX_PERSISTED_LOGS)));
-  } catch { /* QuotaExceeded */ }
-}
+const MAX_LOGS = 1000;
 
 export default function Logs() {
-  const [entries, setEntries] = useState<LogEntry[]>(() => loadPersistedLogs());
+  const [searchParams] = useSearchParams();
+  const initialAgent = searchParams.get('agent');
+
+  const [entries, setEntries] = useState<LogEntry[]>([]);
+  const [source, setSource] = useState<'all' | 'system' | 'agent'>('all');
   const [paused, setPaused] = useState(false);
-  const [connected, setConnected] = useState(false);
+  const [connected, setConnected] = useState({ system: false, agent: false });
   const [autoScroll, setAutoScroll] = useState(true);
-  const [infoDismissed, setInfoDismissed] = useState(false);
-  const [typeFilters, setTypeFilters] = useState<Set<string>>(new Set());
+  const [agentFilter] = useState<string>(initialAgent || '');
+
   const containerRef = useRef<HTMLDivElement>(null);
-  const sseRef = useRef<SSEClient | null>(null);
+  const sseSystemRef = useRef<SSEClient | null>(null);
+  const sseAgentRef = useRef<SSEClient | null>(null);
   const pausedRef = useRef(false);
-  const entryIdRef = useRef(entries.length);
+  const nextIdRef = useRef(0);
 
-  // Persist logs to sessionStorage so they survive tab switches
-  useEffect(() => { persistLogs(entries); }, [entries]);
-
-  // Keep pausedRef in sync
   useEffect(() => { pausedRef.current = paused; }, [paused]);
 
-  useEffect(() => {
-    // Fetch recent event history so logs are visible even if the tab was closed
-    const token = getToken();
-    const headers: Record<string, string> = {};
-    if (token) headers['Authorization'] = `Bearer ${token}`;
+  const addLog = useCallback((data: any, source: 'system' | 'agent') => {
+    if (pausedRef.current) return;
 
-    fetch(`${apiOrigin}${basePath}/api/events/history`, { headers })
-      .then((r) => (r.ok ? r.json() : Promise.reject(r.status)))
-      .then(({ events }: { events: SSEEvent[] }) => {
-        if (!Array.isArray(events) || events.length === 0) return;
-        const historical: LogEntry[] = events.map((evt, i) => ({
-          id: `hist-${i}`,
-          event: { ...evt, type: evt.type ?? 'unknown' },
-        }));
-        setEntries((prev) => {
-          // Deduplicate: keep history entries older than the earliest existing entry
-          const earliest = prev[0]?.event.timestamp;
-          const fresh = earliest
-            ? historical.filter((e) => !e.event.timestamp || e.event.timestamp < earliest)
-            : historical;
-          const merged = [...fresh, ...prev];
-          return merged.length > 500 ? merged.slice(-500) : merged;
-        });
-        entryIdRef.current += events.length;
-      })
-      .catch(() => {}); // History is best-effort
-
-    const client = new SSEClient();
-
-    client.onConnect = () => {
-      setConnected(true);
+    const entry: LogEntry = {
+      id: `l-${nextIdRef.current++}`,
+      timestamp: data.timestamp || new Date().toISOString(),
+      level: data.level || 'INFO',
+      agent: data.agent || 'System',
+      message: data.message || (typeof data === 'string' ? data : JSON.stringify(data)),
+      target: data.target || '',
+      source,
     };
 
-    client.onError = () => {
-      setConnected(false);
-    };
-
-    client.onEvent = (event: SSEEvent) => {
-      if (pausedRef.current) return;
-      entryIdRef.current += 1;
-      const entry: LogEntry = {
-        id: `log-${entryIdRef.current}`,
-        event,
-      };
-      setEntries((prev) => {
-        const next = [...prev, entry];
-        return next.length > 500 ? next.slice(-500) : next;
-      });
-    };
-    client.connect();
-    sseRef.current = client;
-    return () => {
-      client.disconnect();
-    };
+    setEntries(prev => {
+      const next = [...prev, entry];
+      return next.length > MAX_LOGS ? next.slice(-MAX_LOGS) : next;
+    });
   }, []);
 
-  // Auto-scroll to bottom
+  useEffect(() => {
+    // 1. Connect to System Logs
+    const systemClient = new SSEClient(`${apiOrigin}${basePath}/api/system_logs`);
+    systemClient.onConnect = () => setConnected(c => ({ ...c, system: true }));
+    systemClient.onDisconnect = () => setConnected(c => ({ ...c, system: false }));
+    systemClient.onEvent = (evt) => addLog(evt, 'system');
+    systemClient.connect();
+    sseSystemRef.current = systemClient;
+
+    // 2. Connect to Agent Event Logs (more structured info)
+    const agentClient = new SSEClient(`${apiOrigin}${basePath}/api/agent_logs`);
+    agentClient.onConnect = () => setConnected(c => ({ ...c, agent: true }));
+    agentClient.onDisconnect = () => setConnected(c => ({ ...c, agent: false }));
+    agentClient.onEvent = (evt) => addLog(evt, 'agent');
+    agentClient.connect();
+    sseAgentRef.current = agentClient;
+
+    return () => {
+      systemClient.disconnect();
+      agentClient.disconnect();
+    };
+  }, [addLog]);
+
+  // Auto-scroll logic
   useEffect(() => {
     if (autoScroll && containerRef.current) {
       containerRef.current.scrollTop = containerRef.current.scrollHeight;
     }
   }, [entries, autoScroll]);
 
-  // Detect user scroll to toggle auto-scroll
   const handleScroll = useCallback(() => {
     if (!containerRef.current) return;
     const { scrollTop, scrollHeight, clientHeight } = containerRef.current;
@@ -154,178 +117,152 @@ export default function Logs() {
     setAutoScroll(isAtBottom);
   }, []);
 
-  const jumpToBottom = () => {
-    if (containerRef.current) {
-      containerRef.current.scrollTop = containerRef.current.scrollHeight;
-    }
-    setAutoScroll(true);
+  const clearLogs = () => {
+    setEntries([]);
   };
 
-  const allTypes = Array.from(new Set(entries.map((e) => e.event.type))).sort();
-
-  const toggleTypeFilter = (type: string) => {
-    setTypeFilters((prev) => {
-      const next = new Set(prev);
-      if (next.has(type)) {
-        next.delete(type);
-      } else {
-        next.add(type);
-      }
-      return next;
+  const filteredEntries = useMemo(() => {
+    return entries.filter(e => {
+      if (source !== 'all' && e.source !== source) return false;
+      if (agentFilter && e.agent !== agentFilter && e.agent !== 'System') return false;
+      return true;
     });
-  };
-
-  const filteredEntries = typeFilters.size === 0 ? entries : entries.filter((e) => typeFilters.has(e.event.type));
+  }, [entries, source, agentFilter]);
 
   return (
-    <div className="flex flex-col h-full">
-      {/* Toolbar */}
-      <div className="flex items-center justify-between px-6 py-3 border-b animate-fade-in" style={{ borderColor: 'var(--pc-border)', background: 'var(--pc-bg-surface)' }}>
-        <div className="flex items-center gap-3">
-          <Activity className="h-5 w-5" style={{ color: 'var(--pc-accent)' }} />
-          <h2 className="text-sm font-semibold uppercase tracking-wider" style={{ color: 'var(--pc-text-primary)' }}>{t('logs.live_logs')}</h2>
-          <span className="text-[10px] font-mono ml-2" style={{ color: 'var(--pc-text-faint)' }}>
-            {filteredEntries.length} {t('logs.events')}
-          </span>
+    <div className="flex flex-col h-full bg-[#0d0f14] text-[#d1d5db] font-mono selection:bg-blue-500/30">
+      {/* Header / Toolbar */}
+      <div className="flex flex-wrap items-center justify-between px-4 py-3 border-b border-white/5 bg-black/20 backdrop-blur-md sticky top-0 z-10">
+        <div className="flex items-center gap-4">
+          <div className="flex items-center gap-2">
+            <Terminal className="h-4 w-4 text-blue-400" />
+            <h2 className="text-xs font-bold uppercase tracking-widest text-white/90">Console</h2>
+          </div>
+
+          <div className="h-4 w-px bg-white/10 mx-2" />
+
+          {/* Source Tabs */}
+          <div className="flex bg-white/5 p-1 rounded-lg border border-white/5">
+            <button
+              onClick={() => setSource('all')}
+              className={`px-3 py-1 rounded-md text-[10px] font-bold uppercase transition-all ${
+                source === 'all' ? 'bg-blue-600 text-white shadow-lg shadow-blue-600/20' : 'text-white/40 hover:text-white/60'
+              }`}
+            >
+              All
+            </button>
+            <button
+              onClick={() => setSource('system')}
+              className={`px-3 py-1 rounded-md text-[10px] font-bold uppercase transition-all ${
+                source === 'system' ? 'bg-emerald-600 text-white shadow-lg shadow-emerald-600/20' : 'text-white/40 hover:text-white/60'
+              }`}
+            >
+              System
+            </button>
+            <button
+              onClick={() => setSource('agent')}
+              className={`px-3 py-1 rounded-md text-[10px] font-bold uppercase transition-all ${
+                source === 'agent' ? 'bg-amber-600 text-white shadow-lg shadow-amber-600/20' : 'text-white/40 hover:text-white/60'
+              }`}
+            >
+              Agents
+            </button>
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          {/* Pause/Resume */}
+
+        <div className="flex items-center gap-2 mt-2 sm:mt-0">
+          <div className="flex items-center gap-3 px-3 py-1.5 rounded-lg bg-white/5 border border-white/5 mr-2">
+            <div className="flex items-center gap-1.5">
+              <div className={`w-1.5 h-1.5 rounded-full ${connected.system ? 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.5)]' : 'bg-red-400'}`} />
+              <span className="text-[9px] uppercase font-bold text-white/50">Sys</span>
+            </div>
+            <div className="flex items-center gap-1.5">
+              <div className={`w-1.5 h-1.5 rounded-full ${connected.agent ? 'bg-emerald-400 shadow-[0_0_8px_rgba(52,211,153,0.5)]' : 'bg-red-400'}`} />
+              <span className="text-[9px] uppercase font-bold text-white/50">Agent</span>
+            </div>
+          </div>
+
           <button
             onClick={() => setPaused(!paused)}
-            className="btn-electric flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold"
-            style={{ background: paused ? 'var(--color-status-success)' : 'var(--color-status-warning)', color: 'white' }}
+            className={`p-2 rounded-lg transition-all ${
+              paused ? 'bg-emerald-500/20 text-emerald-400 hover:bg-emerald-500/30' : 'bg-amber-500/10 text-amber-500 hover:bg-amber-500/20'
+            }`}
+            title={paused ? 'Resume' : 'Pause'}
           >
-            {paused ? (
-              <>
-                <Play className="h-3.5 w-3.5" /> {t('logs.resume')}
-              </>
-            ) : (
-              <>
-                <Pause className="h-3.5 w-3.5" /> {t('logs.pause')}
-              </>
-            )}
+            {paused ? <Play size={16} /> : <Pause size={16} />}
           </button>
 
-          {/* Jump to Bottom */}
-          {!autoScroll && (
-            <button onClick={jumpToBottom} className="btn-electric flex items-center gap-1.5 px-3 py-1.5 text-xs font-semibold">
-              <ArrowDown className="h-3.5 w-3.5" />{t('logs.jump_to_bottom')}
-            </button>
-          )}
+          <button
+            onClick={clearLogs}
+            className="p-2 rounded-lg bg-white/5 text-white/40 hover:bg-red-500/10 hover:text-red-400 transition-all"
+            title="Clear Console"
+          >
+            <Trash2 size={16} />
+          </button>
         </div>
       </div>
 
-      {/* Event type filters */}
-      {allTypes.length > 0 && (
-        <div className="flex items-center gap-2 px-6 py-2 border-b overflow-x-auto" style={{ borderColor: 'var(--pc-border)', background: 'var(--pc-bg-base)' }}>
-          <Filter className="h-3.5 w-3.5 flex-shrink-0" style={{ color: 'var(--pc-text-faint)' }} />
-          <span className="text-[10px] uppercase tracking-wider flex-shrink-0" style={{ color: 'var(--pc-text-faint)' }}>{t('logs.filter_label')}:</span>
-          {allTypes.map((type) => (
-            <label key={type} className="flex items-center gap-1.5 cursor-pointer flex-shrink-0">
-              <input
-                type="checkbox"
-                checked={typeFilters.has(type)}
-                onChange={() => toggleTypeFilter(type)}
-                className="rounded"
-                style={{ accentColor: 'var(--pc-accent)' }}
-              />
-              <span className="text-[10px] capitalize" style={{ color: 'var(--pc-text-muted)' }}>{type}</span>
-            </label>
-          ))}
-          {typeFilters.size > 0 && (
-            <button
-              onClick={() => setTypeFilters(new Set())}
-              className="text-[10px] flex-shrink-0 ml-1 transition-colors"
-              style={{ color: 'var(--pc-accent)' }}>
-              {t('logs.clear')}
-            </button>
-          )}
-        </div>
-      )}
-
-      {/* Informational banner — what appears here and what does not */}
-      {!infoDismissed && (
-        <div className="flex items-start gap-3 px-6 py-3 border-b flex-shrink-0" style={{ borderColor: 'rgba(56, 189, 248, 0.2)', background: 'rgba(56, 189, 248, 0.05)' }}>
-          <div className="flex-1 text-xs" style={{ color: 'var(--pc-text-secondary)' }}>
-            <span className="font-semibold" style={{ color: '#38bdf8' }}>What appears here: </span>
-            agent activity over SSE — LLM requests, tool calls, agent start/end, and errors.
-            {' '}<span className="font-semibold" style={{ color: 'var(--pc-text-muted)' }}>What does not: </span>
-            daemon stdout and <code>RUST_LOG</code> tracing output go to the terminal or log file, not this stream.
-            {' '}To see tracing logs, run the daemon with <code>RUST_LOG=info zeroclaw</code> and check your terminal.
-          </div>
-          <button
-            onClick={() => setInfoDismissed(true)}
-            className="flex-shrink-0 text-[10px] btn-icon"
-            aria-label="Dismiss"
-            style={{ color: 'var(--pc-text-faint)' }}
-          >
-            ✕
-          </button>
-        </div>
-      )}
-
-      {/* Log entries */}
+      {/* Log Container */}
       <div
         ref={containerRef}
         onScroll={handleScroll}
-        className="flex-1 overflow-y-auto p-4 space-y-2 min-h-0"
+        className="flex-1 overflow-y-auto p-4 font-mono text-[12px] leading-relaxed scrollbar-thin scrollbar-thumb-white/10"
       >
         {filteredEntries.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-full animate-fade-in" style={{ color: 'var(--pc-text-muted)' }}>
-            <Activity className="h-10 w-10 mb-3" style={{ color: 'var(--pc-text-faint)' }} />
-            <p className="text-sm">
-              {paused
-                ? t('logs.paused_hint')
-                : t('logs.waiting_hint')}
-            </p>
+          <div className="flex flex-col items-center justify-center h-full text-white/20">
+            <Terminal size={48} className="mb-4 opacity-20" />
+            <p className="text-sm font-bold uppercase tracking-widest">{paused ? 'Stream Paused' : 'Waiting for output...'}</p>
           </div>
         ) : (
-          filteredEntries.map((entry) => {
-            const { event } = entry;
-            const style = eventTypeStyle(event.type);
-            const detail =
-              event.message ??
-              event.content ??
-              event.data ??
-              JSON.stringify(
-                Object.fromEntries(
-                  Object.entries(event).filter(
-                    ([k]) => k !== 'type' && k !== 'timestamp',
-                  ),
-                ),
-              );
-            return (
-              <div
-                key={entry.id}
-                className="card rounded-xl p-3"
-              >
-                <div className="flex items-start gap-3">
-                  <span className="text-[10px] font-mono whitespace-nowrap mt-0.5" style={{ color: 'var(--pc-text-faint)' }}>
-                    {formatTimestamp(event.timestamp)}
-                  </span>
-                  <span
-                    className="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-semibold border capitalize flex-shrink-0"
-                    style={style}
-                  >
-                    {event.type}
-                  </span>
-                  <p className="text-sm break-all min-w-0" style={{ color: 'var(--pc-text-secondary)' }}>
-                    {typeof detail === 'string' ? detail : JSON.stringify(detail)}
-                  </p>
-                </div>
+          <div className="space-y-0.5">
+            {filteredEntries.map((log) => (
+              <div key={log.id} className="group flex gap-3 hover:bg-white/[0.02] -mx-4 px-4 py-0.5 transition-colors">
+                <span className="text-white/20 shrink-0 select-none w-20">{formatTimestamp(log.timestamp)}</span>
+                <span
+                  className="font-bold shrink-0 w-12 text-center select-none"
+                  style={{ color: getLevelColor(log.level) }}
+                >
+                  {log.level.padEnd(5)}
+                </span>
+                <span className="text-blue-400/60 shrink-0 w-24 overflow-hidden text-ellipsis whitespace-nowrap select-none">
+                  {log.source === 'system' ? <Cpu size={12} className="inline mr-1" /> : <Bot size={12} className="inline mr-1" />}
+                  {log.agent}
+                </span>
+                <span className="text-white/40 shrink-0 w-32 overflow-hidden text-ellipsis whitespace-nowrap select-none opacity-0 group-hover:opacity-100 transition-opacity">
+                  {log.target}
+                </span>
+                <span className="text-white/90 flex-1 break-words">
+                  {log.message}
+                </span>
               </div>
-            );
-          })
-          )}
+            ))}
+          </div>
+        )}
+
+        {!autoScroll && filteredEntries.length > 0 && (
+          <button
+            onClick={() => {
+              if (containerRef.current) {
+                containerRef.current.scrollTop = containerRef.current.scrollHeight;
+                setAutoScroll(true);
+              }
+            }}
+            className="fixed bottom-20 right-8 bg-blue-600 text-white px-4 py-2 rounded-full shadow-2xl flex items-center gap-2 text-xs font-bold animate-bounce z-20"
+          >
+            <ArrowDown size={14} /> New Logs Below
+          </button>
+        )}
       </div>
-      {/* Footer: connection status */}
-      <div className="flex items-center justify-center gap-2 px-6 py-2 border-t flex-shrink-0" style={{ borderColor: 'var(--pc-border)', background: 'var(--pc-bg-surface)' }}>
-        <span className="status-dot" style={
-          connected ? { background: 'var(--color-status-success)', boxShadow: '0 0 6px var(--color-status-success)' } : { background: 'var(--color-status-error)', boxShadow: '0 0 6px var(--color-status-error)' }
-        } />
-        <span className="text-[10px]" style={{ color: 'var(--pc-text-faint)' }}>
-          {connected ? t('logs.connected') : t('logs.disconnected')}
-        </span>
+
+      <div className="px-4 py-2 bg-black/40 border-t border-white/5 text-[9px] text-white/30 flex justify-between items-center">
+        <div className="flex gap-4">
+          <span>BUFFER: {entries.length} / {MAX_LOGS}</span>
+          <span>FILTERED: {filteredEntries.length}</span>
+        </div>
+        <div className="flex gap-4 uppercase font-bold tracking-tighter">
+          <span className={connected.system ? 'text-emerald-500' : 'text-red-500'}>System: {connected.system ? 'Online' : 'Offline'}</span>
+          <span className={connected.agent ? 'text-emerald-500' : 'text-red-500'}>Events: {connected.agent ? 'Online' : 'Offline'}</span>
+        </div>
       </div>
     </div>
   );

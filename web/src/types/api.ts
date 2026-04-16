@@ -169,3 +169,12 @@ export interface SessionMessagesResponse {
   messages: SessionMessageRow[];
   session_persistence: boolean;
 }
+
+export interface Agent {
+  id: string;
+  name: string;
+  provider: string;
+  model: string;
+  is_default: boolean;
+  description?: string;
+}

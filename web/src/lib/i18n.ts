@@ -449,6 +449,18 @@ const translations: Record<Locale, Record<string, string>> = {
     'nav.logs': 'Logs',
     'nav.doctor': 'Doctor',
     'nav.canvas': 'Canvas',
+    'nav.agents': 'Agents',
+
+    // Agents
+    'agents.title': 'Agent Management',
+    'agents.subtitle': 'Monitor and manage individual agent activity and logs.',
+    'agents.view_logs': 'View Logs',
+    'agents.download_logs': 'Download Logs',
+    'agents.no_agents': 'No agents configured.',
+    'agents.name': 'Agent Name',
+    'agents.provider_model': 'Provider / Model',
+    'agents.activity': 'Activity',
+    'agents.actions': 'Actions',
 
     // Dashboard
     'dashboard.title': 'Dashboard',
@@ -10888,6 +10900,18 @@ const translations: Record<Locale, Record<string, string>> = {
     'nav.logs': 'Nhật ký',
     'nav.doctor': 'Chẩn đoán',
     'nav.canvas': 'Canvas',
+    'nav.agents': 'Agent',
+
+    // Agents
+    'agents.title': 'Quản lý Agent',
+    'agents.subtitle': 'Theo dõi và quản lý hoạt động, log của từng agent.',
+    'agents.view_logs': 'Xem Log',
+    'agents.download_logs': 'Tải Log',
+    'agents.no_agents': 'Chưa cấu hình agent.',
+    'agents.name': 'Tên Agent',
+    'agents.provider_model': 'Provider / Model',
+    'agents.activity': 'Hoạt động',
+    'agents.actions': 'Thao tác',
 
     // Dashboard
     'dashboard.title': 'Bảng điều khiển',

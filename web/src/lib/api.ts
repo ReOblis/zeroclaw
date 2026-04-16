@@ -12,6 +12,7 @@ import type {
   Session,
   ChannelDetail,
   SessionMessagesResponse,
+  Agent,
 } from '../types/api';
 import { clearToken, getToken, setToken } from './auth';
 import { apiOrigin, basePath } from './basePath';
@@ -346,4 +347,22 @@ export function getCliTools(): Promise<CliTool[]> {
   return apiFetch<CliTool[] | { cli_tools: CliTool[] }>('/api/cli-tools').then((data) =>
     unwrapField(data, 'cli_tools'),
   );
+}
+
+// ---------------------------------------------------------------------------
+// Agents
+// ---------------------------------------------------------------------------
+
+export function getAgents(): Promise<Agent[]> {
+  return apiFetch<Agent[] | { agents: Agent[] }>('/api/agents').then((data) =>
+    unwrapField(data, 'agents'),
+  );
+}
+
+export const listAgents = getAgents;
+
+export function getAgentLogsDownloadUrl(id: string): string {
+  const token = getToken();
+  const url = `${apiOrigin}${basePath}/api/agents/${encodeURIComponent(id)}/logs/download`;
+  return token ? `${url}?token=${encodeURIComponent(token)}` : url;
 }
