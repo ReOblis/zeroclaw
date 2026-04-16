@@ -1897,6 +1897,9 @@ impl Default for MediaPipelineConfig {
 #[derive(Debug, Clone, Serialize, Deserialize, JsonSchema, Configurable)]
 #[prefix = "identity"]
 pub struct IdentityConfig {
+    /// Identity name (e.g. "Vy"). Defaults to "Assistant".
+    #[serde(default)]
+    pub name: Option<String>,
     /// Identity format: "openclaw" (default) or "aieos"
     #[serde(default = "default_identity_format")]
     pub format: String,
@@ -1915,6 +1918,7 @@ fn default_identity_format() -> String {
 impl Default for IdentityConfig {
     fn default() -> Self {
         Self {
+            name: None,
             format: default_identity_format(),
             aieos_path: None,
             aieos_inline: None,

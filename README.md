@@ -645,6 +645,7 @@ Use these when you're past the onboarding flow and want the deeper reference.
 ### Deployment + operations
 
 - Network deployment guide: [docs/ops/network-deployment.md](docs/ops/network-deployment.md)
+- **VPS Deployment (Windows to Linux)**: Use the automated `.\deploy.ps1` script to build locally and push to a remote VPS. This is recommended for resource-constrained servers (< 4GB RAM).
 - Proxy agent playbook: [docs/ops/proxy-agent-playbook.md](docs/ops/proxy-agent-playbook.md)
 - Hardware guides: [docs/hardware/README.md](docs/hardware/README.md)
 

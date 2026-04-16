@@ -1627,6 +1627,109 @@ pub async fn handle_claude_code_hook(
     Json(serde_json::json!({ "ok": true }))
 }
 
+// ── Agent API handlers ──────────────────────────────────────────
+
+/// GET /api/agents — list all configured agents
+pub async fn handle_list_agents(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let config = state.config.lock();
+    let mut agents = Vec::new();
+
+    // Add default assistant if not in agents
+    if !config.agents.contains_key("Assistant") {
+        let mut agent_name = config
+            .identity
+            .name
+            .clone()
+            .unwrap_or_else(|| "Assistant".to_string());
+
+        if let Ok(Some(aieos)) =
+            crate::identity::load_aieos_identity(&config.identity, &config.workspace_dir)
+        {
+            if let Some(id_obj) = aieos.identity {
+                if let Some(names) = id_obj.names {
+                    if let Some(first) = names.first {
+                        agent_name = first;
+                    }
+                }
+            }
+        }
+        agents.push(serde_json::json!({
+            "id": "Assistant",
+            "name": agent_name,
+            "provider": config.default_provider.clone().unwrap_or_default(),
+            "model": config.default_model.clone().unwrap_or_default(),
+        }));
+    }
+
+    for (name, cfg) in &config.agents {
+        agents.push(serde_json::json!({
+            "id": name,
+            "name": name,
+            "provider": cfg.provider,
+            "model": cfg.model,
+        }));
+    }
+
+    Json(serde_json::json!({ "agents": agents })).into_response()
+}
+
+/// GET /api/agents/:id/logs/download — download agent activity logs
+pub async fn handle_download_agent_logs(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> impl IntoResponse {
+    if let Err(e) = require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let workspace_dir = {
+        let config = state.config.lock();
+        config.workspace_dir.clone()
+    };
+
+    let log_path = workspace_dir
+        .join("agents")
+        .join(&id)
+        .join("logs")
+        .join("activity.log");
+
+    if !log_path.exists() {
+        return (
+            StatusCode::NOT_FOUND,
+            Json(serde_json::json!({ "error": format!("Logs for agent '{}' not found", id) })),
+        )
+            .into_response();
+    }
+
+    match tokio::fs::read(&log_path).await {
+        Ok(content) => (
+            StatusCode::OK,
+            [
+                (header::CONTENT_TYPE, "application/x-jsonlines"),
+                (
+                    header::CONTENT_DISPOSITION,
+                    &format!("attachment; filename=\"agent_{}_activity.log\"", id),
+                ),
+            ],
+            content,
+        )
+            .into_response(),
+        Err(e) => (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            Json(serde_json::json!({ "error": format!("Failed to read log file: {}", e) })),
+        )
+            .into_response(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

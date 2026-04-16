@@ -22,6 +22,38 @@ pub use prometheus::PrometheusObserver;
 pub use traits::{Observer, ObserverEvent};
 #[allow(unused_imports)]
 pub use verbose::VerboseObserver;
+pub mod agent_log_layer;
+pub mod global_log_layer;
+
+use std::sync::Arc;
+use tokio::sync::broadcast;
+use serde::{Deserialize, Serialize};
+
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct AgentLogEntry {
+    pub timestamp: String,
+    pub level: String,
+    pub agent: String,
+    pub message: String,
+    pub target: String,
+}
+
+use std::sync::OnceLock;
+
+pub static AGENT_LOG_CHANNEL: OnceLock<broadcast::Sender<AgentLogEntry>> = OnceLock::new();
+pub static SYSTEM_LOG_CHANNEL: OnceLock<broadcast::Sender<AgentLogEntry>> = OnceLock::new();
+
+pub fn get_agent_log_tx() -> broadcast::Sender<AgentLogEntry> {
+    AGENT_LOG_CHANNEL
+        .get_or_init(|| broadcast::channel(1000).0)
+        .clone()
+}
+
+pub fn get_system_log_tx() -> broadcast::Sender<AgentLogEntry> {
+    SYSTEM_LOG_CHANNEL
+        .get_or_init(|| broadcast::channel(1000).0)
+        .clone()
+}
 
 use crate::config::ObservabilityConfig;
 

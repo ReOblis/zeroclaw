@@ -101,6 +101,50 @@ pub async fn handle_events_history(
     Json(serde_json::json!({ "events": events })).into_response()
 }
 
+/// GET /api/stream/agent_logs — SSE stream for real-time agent activity logs
+pub async fn handle_agent_logs(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err(e) = super::api::require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let rx = crate::observability::get_agent_log_tx().subscribe();
+    let stream = BroadcastStream::new(rx).filter_map(|result| match result {
+        Ok(entry) => Some(Ok::<_, Infallible>(
+            Event::default().data(serde_json::to_string(&entry).unwrap_or_default()),
+        )),
+        Err(_) => None,
+    });
+
+    Sse::new(stream)
+        .keep_alive(KeepAlive::default())
+        .into_response()
+}
+
+/// GET /api/stream/system_logs — SSE stream for real-time global system logs
+pub async fn handle_system_logs(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> impl IntoResponse {
+    if let Err(e) = super::api::require_auth(&state, &headers) {
+        return e.into_response();
+    }
+
+    let rx = crate::observability::get_system_log_tx().subscribe();
+    let stream = BroadcastStream::new(rx).filter_map(|result| match result {
+        Ok(entry) => Some(Ok::<_, Infallible>(
+            Event::default().data(serde_json::to_string(&entry).unwrap_or_default()),
+        )),
+        Err(_) => None,
+    });
+
+    Sse::new(stream)
+        .keep_alive(KeepAlive::default())
+        .into_response()
+}
+
 /// Broadcast observer that forwards events to the SSE broadcast channel.
 pub struct BroadcastObserver {
     inner: Arc<dyn crate::observability::Observer>,

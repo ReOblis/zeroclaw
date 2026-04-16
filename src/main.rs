@@ -916,14 +916,27 @@ async fn main() -> Result<()> {
         return Ok(());
     }
 
-    // Initialize logging - respects RUST_LOG env var, defaults to INFO
-    let subscriber = fmt::Subscriber::builder()
-        .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
-        )
-        .finish();
+    // Resolve workspace dir early for logging layer
+    let (_, workspace_dir) = crate::config::schema::resolve_runtime_dirs_for_onboarding().await
+        .unwrap_or_else(|_| (std::path::PathBuf::new(), std::path::PathBuf::from(".")));
 
-    tracing::subscriber::set_global_default(subscriber).expect("setting default subscriber failed");
+    // Initialize logging - respects RUST_LOG env var, defaults to INFO
+    use tracing_subscriber::Layer;
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+
+    let fmt_layer = fmt::layer()
+        .with_writer(std::io::stderr)
+        .with_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")));
+
+    let agent_log_layer = crate::observability::agent_log_layer::AgentLogLayer::new(workspace_dir);
+
+    let global_log_layer = observability::global_log_layer::GlobalLogLayer;
+    tracing_subscriber::registry()
+        .with(fmt_layer)
+        .with(agent_log_layer)
+        .with(global_log_layer)
+        .init();
 
     // Onboard auto-detects the environment: if stdin/stdout are a TTY and no
     // provider flags were given, it runs the full interactive wizard; otherwise

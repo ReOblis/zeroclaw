@@ -77,3 +77,11 @@ apps/tauri/tauri.conf.json
 apps/tauri/build.rs
 !apps/tauri/Cargo.toml
 scripts/
+
+# Node.js dependencies and build artifacts (important to prevent Windows permission issues)
+node_modules
+web/node_modules
+web/dist
+.npm
+.nvm
+package-lock.json

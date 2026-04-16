@@ -40,7 +40,11 @@ impl XmlToolDispatcher {
         let open_tags = ["<tool_call>", "<toolcall>", "```tool_call", "```toolcall"];
         let close_tags = ["</tool_call>", "</toolcall>", "```"];
 
-        while let Some(start_pos) = remaining.find('<').or_else(|| remaining.find("```")) {
+        while let Some(start_pos) = [remaining.find('<'), remaining.find("```"), remaining.find('{')]
+            .iter()
+            .filter_map(|&pos| pos)
+            .min() 
+        {
             let mut found_tag = None;
             for tag in open_tags {
                 if remaining[start_pos..].starts_with(tag) {
@@ -49,91 +53,97 @@ impl XmlToolDispatcher {
                 }
             }
 
-            let Some(open_tag) = found_tag else {
-                // Not an open tag, skip this character/sequence
+            if let Some(open_tag) = found_tag {
+                // Structured tag found
+                let before = &remaining[..start_pos];
+                if !before.trim().is_empty() {
+                    text_parts.push(before.trim().to_string());
+                }
+
+                let after_open = &remaining[start_pos + open_tag.len()..];
+                let search_area = if open_tag.starts_with("```") && after_open.starts_with('>') {
+                    &after_open[1..]
+                } else {
+                    after_open
+                };
+
+                let mut found_end: Option<(&str, usize)> = None;
+                for ctag in close_tags {
+                    if let Some(end) = search_area.find(ctag) {
+                        if found_end.is_none() || end < found_end.unwrap().1 {
+                            found_end = Some((ctag, end));
+                        }
+                    }
+                }
+
+                if let Some((ctag, end_pos)) = found_end {
+                    let mut inner = search_area[..end_pos].trim();
+                    if inner.starts_with("```json") {
+                        inner = inner[7..].trim_start();
+                    } else if inner.starts_with("```") {
+                        inner = inner[3..].trim_start();
+                    }
+                    if inner.ends_with("```") {
+                        inner = inner[..inner.len() - 3].trim_end();
+                    }
+
+                    if let Ok(parsed) = serde_json::from_str::<Value>(inner) {
+                        if let Some(call) = Self::val_to_call(&parsed) {
+                            calls.push(call);
+                        }
+                    }
+                    
+                    let advance = if open_tag.starts_with("```") && after_open.starts_with('>') {
+                        start_pos + open_tag.len() + 1 + end_pos + ctag.len()
+                    } else {
+                        start_pos + open_tag.len() + end_pos + ctag.len()
+                    };
+                    remaining = &remaining[advance..];
+                } else {
+                    let next_char_idx = remaining[start_pos..].char_indices().nth(1).map(|(i, _)| i).unwrap_or(1);
+                    remaining = &remaining[start_pos + next_char_idx..];
+                }
+            } else if remaining[start_pos..].starts_with('{') {
+                // Potential raw JSON tool call (missing open tag)
+                // We'll try to find a closing tag or just the end of the JSON object.
+                let search_area = &remaining[start_pos..];
+                
+                // Attempt to find the end of the JSON object properly
+                if let Some((parsed, consumed)) = Self::extract_json(search_area) {
+                    if let Some(call) = Self::val_to_call(&parsed) {
+                        // It looks like a tool call! 
+                        // Did it have a closing tag?
+                        let mut final_advance = start_pos + consumed;
+                        let after_json = &remaining[final_advance..];
+                        for ctag in close_tags {
+                            if after_json.trim_start().starts_with(ctag) {
+                                let ctag_pos = after_json.find(ctag).unwrap();
+                                final_advance += ctag_pos + ctag.len();
+                                break;
+                            }
+                        }
+
+                        let before = &remaining[..start_pos];
+                        if !before.trim().is_empty() {
+                            text_parts.push(before.trim().to_string());
+                        }
+                        calls.push(call);
+                        remaining = &remaining[final_advance..];
+                        continue;
+                    }
+                }
+                
+                // Not a valid tool call JSON, treat as text and skip '{'
                 let next_char_idx = remaining[start_pos..].char_indices().nth(1).map(|(i, _)| i).unwrap_or(1);
                 if start_pos > 0 {
                     text_parts.push(remaining[..start_pos].to_string());
                 }
                 remaining = &remaining[start_pos + next_char_idx..];
-                continue;
-            };
-
-            // Capture text before the tag
-            let before = &remaining[..start_pos];
-            if !before.trim().is_empty() {
-                text_parts.push(before.trim().to_string());
-            }
-
-            // Look for any valid closing tag
-            let mut found_end: Option<(&str, usize)> = None;
-            let after_open = &remaining[start_pos + open_tag.len()..];
-            
-            // Special Case: detect and strip trailing > after ```tool_call
-            let search_area = if open_tag.starts_with("```") && after_open.starts_with('>') {
-                &after_open[1..]
             } else {
-                after_open
-            };
-
-            for ctag in close_tags {
-                if let Some(end) = search_area.find(ctag) {
-                    if found_end.is_none() || end < found_end.unwrap().1 {
-                        found_end = Some((ctag, end));
-                    }
-                }
-            }
-
-            if let Some((ctag, end_pos)) = found_end {
-                let mut inner = search_area[..end_pos].trim();
-                
-                // Cleanup markdown code block markers if present inside
-                if inner.starts_with("```json") {
-                    inner = inner[7..].trim_start();
-                } else if inner.starts_with("```") {
-                    inner = inner[3..].trim_start();
-                }
-                if inner.ends_with("```") {
-                    inner = inner[..inner.len() - 3].trim_end();
-                }
-
-                // If inner matches another tool call tag, the model might have nested them or errored.
-                // We'll attempt to parse the JSON.
-                match serde_json::from_str::<Value>(inner) {
-                    Ok(parsed) => {
-                        let name = parsed
-                            .get("name")
-                            .and_then(Value::as_str)
-                            .unwrap_or("")
-                            .to_string();
-                        if !name.is_empty() {
-                            let arguments = parsed
-                                .get("arguments")
-                                .cloned()
-                                .unwrap_or_else(|| Value::Object(serde_json::Map::new()));
-                            calls.push(ParsedToolCall {
-                                name,
-                                arguments,
-                                tool_call_id: None,
-                            });
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!("Malformed tool_call JSON in block: {e}");
-                    }
-                }
-                
-                // Advance past the closing tag
-                // Note: end_pos is relative to search_area.
-                let advance = if open_tag.starts_with("```") && after_open.starts_with('>') {
-                    start_pos + open_tag.len() + 1 + end_pos + ctag.len()
-                } else {
-                    start_pos + open_tag.len() + end_pos + ctag.len()
-                };
-                remaining = &remaining[advance..];
-            } else {
-                // No closing tag found, skip this opening tag to avoid infinite loop
                 let next_char_idx = remaining[start_pos..].char_indices().nth(1).map(|(i, _)| i).unwrap_or(1);
+                if start_pos > 0 {
+                    text_parts.push(remaining[..start_pos].to_string());
+                }
                 remaining = &remaining[start_pos + next_char_idx..];
             }
         }
@@ -143,6 +153,21 @@ impl XmlToolDispatcher {
         }
 
         (text_parts.join("\n"), calls)
+    }
+
+    fn val_to_call(parsed: &Value) -> Option<ParsedToolCall> {
+        let name = parsed.get("name").and_then(Value::as_str)?.to_string();
+        if name.is_empty() { return None; }
+        let arguments = parsed.get("arguments").cloned().unwrap_or_else(|| Value::Object(serde_json::Map::new()));
+        Some(ParsedToolCall { name, arguments, tool_call_id: None })
+    }
+
+    fn extract_json(input: &str) -> Option<(Value, usize)> {
+        let mut stream = serde_json::Deserializer::from_str(input).into_iter::<Value>();
+        if let Some(Ok(val)) = stream.next() {
+            return Some((val, stream.byte_offset()));
+        }
+        None
     }
 
     /// Remove `<think>...</think>` blocks from model output.

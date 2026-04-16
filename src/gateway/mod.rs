@@ -543,6 +543,26 @@ pub async fn run_gateway(
         let (tx, _rx) = tokio::sync::broadcast::channel::<serde_json::Value>(256);
         tx
     });
+
+    // ── SSE Bridge for Agent Logs ──────────────────────────────────
+    // Bridge our specialized AGENT_LOG_CHANNEL to the general SSE event stream.
+    {
+        let mut log_rx = crate::observability::get_agent_log_tx().subscribe();
+        let sse_tx = event_tx.clone();
+        tokio::spawn(async move {
+            while let Ok(entry) = log_rx.recv().await {
+                let json = serde_json::json!({
+                    "type": "agent_log",
+                    "timestamp": entry.timestamp,
+                    "level": entry.level,
+                    "agent": entry.agent,
+                    "message": entry.message,
+                    "target": entry.target,
+                });
+                let _ = sse_tx.send(json);
+            }
+        });
+    }
     let event_buffer = Arc::new(sse::EventBuffer::new(500));
     // Extract webhook secret for authentication
     let webhook_secret_hash: Option<Arc<str>> =
@@ -913,6 +933,12 @@ pub async fn run_gateway(
         .route("/webhook/gmail", post(handle_gmail_push_webhook))
         // ── Claude Code runner hooks ──
         .route("/hooks/claude-code", post(api::handle_claude_code_hook))
+        // ── Agent management API ──
+        .route("/api/agents", get(api::handle_list_agents))
+        .route(
+            "/api/agents/{id}/logs/download",
+            get(api::handle_download_agent_logs),
+        )
         // ── Web Dashboard API routes ──
         .route("/api/status", get(api::handle_api_status))
         .route("/api/channels", get(api::handle_api_channels))
@@ -1013,6 +1039,8 @@ pub async fn run_gateway(
         // ── SSE event stream ──
         .route("/api/events", get(sse::handle_sse_events))
         .route("/api/events/history", get(sse::handle_events_history))
+        .route("/api/agent_logs", get(sse::handle_agent_logs))
+        .route("/api/system_logs", get(sse::handle_system_logs))
         // ── WebSocket agent chat ──
         .route("/ws/chat", get(ws::handle_ws_chat))
         // ── WebSocket canvas updates ──

@@ -76,6 +76,7 @@ pub struct Agent {
     hook_runner: Option<Arc<crate::hooks::HookRunner>>,
     pub turn_tokens: u64,
     pub turn_cost_usd: f64,
+    pub name: String,
 }
 
 pub struct AgentBuilder {
@@ -105,6 +106,7 @@ pub struct AgentBuilder {
     autonomy_level: Option<crate::security::AutonomyLevel>,
     activated_tools: Option<Arc<std::sync::Mutex<crate::tools::ActivatedToolSet>>>,
     hook_runner: Option<Arc<crate::hooks::HookRunner>>,
+    name: Option<String>,
 }
 
 impl AgentBuilder {
@@ -136,6 +138,7 @@ impl AgentBuilder {
             autonomy_level: None,
             activated_tools: None,
             hook_runner: None,
+            name: None,
         }
     }
 
@@ -281,6 +284,11 @@ impl AgentBuilder {
         self
     }
 
+    pub fn name(mut self, name: String) -> Self {
+        self.name = Some(name);
+        self
+    }
+
     pub fn build(self) -> Result<Agent> {
         let mut tools = self
             .tools
@@ -340,6 +348,7 @@ impl AgentBuilder {
             hook_runner: self.hook_runner,
             turn_tokens: 0,
             turn_cost_usd: 0.0,
+            name: self.name.unwrap_or_else(|| "Assistant".into()),
         })
     }
 }
@@ -547,7 +556,21 @@ impl Agent {
             None
         };
 
+        let mut agent_name = config.identity.name.clone().unwrap_or_else(|| "Assistant".to_string());
+        if let Ok(Some(aieos)) =
+            crate::identity::load_aieos_identity(&config.identity, &config.workspace_dir)
+        {
+            if let Some(id) = aieos.identity {
+                if let Some(names) = id.names {
+                    if let Some(first) = names.first {
+                        agent_name = first;
+                    }
+                }
+            }
+        }
+
         Agent::builder()
+            .name(agent_name)
             .provider(provider)
             .tools(tools)
             .memory(memory)
@@ -824,6 +847,9 @@ impl Agent {
     }
 
     pub async fn turn(&mut self, user_message: &str) -> Result<String> {
+        let span = tracing::info_span!("agent_turn", agent = %self.name);
+        let _enter = span.enter();
+
         if self.history.is_empty() {
             let system_prompt = self.build_system_prompt()?;
             self.history
@@ -1011,6 +1037,9 @@ impl Agent {
         user_message: &str,
         event_tx: tokio::sync::mpsc::Sender<TurnEvent>,
     ) -> Result<String> {
+        let span = tracing::info_span!("agent_turn", agent = %self.name);
+        let _enter = span.enter();
+
         // ── Preamble (identical to turn) ───────────────────────────────
         if self.history.is_empty() {
             let system_prompt = self.build_system_prompt()?;
